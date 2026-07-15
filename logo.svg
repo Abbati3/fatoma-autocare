@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 110">
+  <!-- yellow accent stripe parallel to the A -->
+  <polygon points="38,20 47,20 13,84 4,84" fill="#f2b705"/>
+  <!-- A -->
+  <polygon points="52,8 66,8 24,92 10,92" fill="#15151a"/>
+  <polygon points="52,8 66,8 94,92 80,92" fill="#15151a"/>
+  <polygon points="34,60 82,60 86,70 30,70" fill="#15151a"/>
+  <!-- F -->
+  <polygon points="78,14 92,14 78,92 64,92" fill="#c8102e"/>
+  <polygon points="78,14 118,14 114,26 74,26" fill="#c8102e"/>
+  <polygon points="70,44 108,44 104,56 66,56" fill="#c8102e"/>
+  <!-- yellow underline swoosh -->
+  <polygon points="20,98 104,86 105,92 21,104" fill="#f2b705"/>
+</svg>

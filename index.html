@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+  <title>Fatoma Autocare</title>
+  <meta name="description" content="Client, job and invoice management for Fatoma Autocare">
+  <meta name="theme-color" content="#c8102e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Fatoma">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icon-180.png">
+  <link rel="icon" type="image/png" href="icon-180.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="appbar">
+    <div class="biz">
+      <div class="logo" id="bizLogo">AF</div>
+      <div class="names">
+        <b id="bizName">Fatoma Autocare</b>
+        <span id="bizTagline">We care for your car like our own</span>
+      </div>
+    </div>
+    <button class="btn small ghost" id="quickAddBtn">＋ New</button>
+  </header>
+
+  <main id="view"></main>
+
+  <button class="fab" id="fab" title="Add">＋</button>
+
+  <nav class="tabbar">
+    <button data-tab="dash"><span class="ico">🏠</span>Home</button>
+    <button data-tab="clients"><span class="ico">👥</span>Clients</button>
+    <button data-tab="jobs"><span class="ico">🧽</span>Jobs</button>
+    <button data-tab="invoices"><span class="ico">🧾</span>Invoices</button>
+    <button data-tab="settings"><span class="ico">⚙️</span>Setup</button>
+  </nav>
+
+  <div id="modalHost"></div>
+  <div id="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
