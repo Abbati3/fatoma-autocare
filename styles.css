@@ -534,7 +534,9 @@ h2.section:first-child { margin-top: 4px; }
 .inv3-thanksub { font-size: 9px; font-weight: 700; letter-spacing: 0.1em; color: #46506b; margin-top: 2px; }
 .inv3-notes { font-size: 11px; color: #46506b; margin-top: 8px; }
 .inv3-sigsub { font-size: 9px; color: #8a93ab; }
-.inv3-footerimg { width: calc(100% + 36px); margin: 14px -18px -4px; display: block; }
+/* footer picture keeps its natural shape: banners span the width,
+   photos sit centered at a sensible height — never stretched */
+.inv3-footerimg { display: block; max-width: 100%; max-height: 200px; margin: 14px auto 0; border-radius: 8px; }
 .inv3-tagbar {
   margin: 14px -18px -18px; padding: 10px 14px;
   background: var(--navy); color: #fff; border-top: 3px solid var(--gold);

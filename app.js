@@ -1313,9 +1313,11 @@ async function exportInvoicePDF(id) {
       foot = await new Promise((resolve) => {
         const im = new Image();
         im.onload = () => {
+          // banners get the full page width; photo-shaped images keep their
+          // aspect and are capped in height so they never distort or dominate
           const ratio = im.height / im.width;
           let w = 595.28, h = w * ratio;
-          if (h > 120) { h = 120; w = h / ratio; }
+          if (h > 140) { h = 140; w = h / ratio; }
           resolve({ src: s.footerImg, w, h });
         };
         im.onerror = () => resolve(null);
