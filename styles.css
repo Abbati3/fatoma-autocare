@@ -475,6 +475,79 @@ h2.section:first-child { margin-top: 4px; }
   .inv2-tagbar { margin: 18px 0 0; border-radius: 6px; }
 }
 
+/* ---------- navy/gold invoice template (matches the printed Fatoma invoice) ---------- */
+
+.inv3 {
+  --navy: #1c2b4a;
+  --gold: #e9a13b;
+  background: #fff;
+  color: var(--navy);
+}
+.inv3-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.inv3-logoimg { height: 64px; max-width: 130px; object-fit: contain; flex-shrink: 0; }
+.inv3-biz { text-align: right; font-size: 11px; color: #46506b; line-height: 1.5; min-width: 0; }
+.inv3-biz b { display: block; font-size: 15px; color: var(--navy); letter-spacing: 0.02em; }
+.inv3-tag { color: var(--gold); font-style: italic; font-size: 11px; }
+.inv3-title { text-align: center; font-size: 30px; font-weight: 800; letter-spacing: 0.04em; color: var(--navy); margin: 12px 0 14px; }
+.inv3-meta { display: flex; gap: 10px; margin-bottom: 14px; }
+.inv3-metabox { border: 1.5px solid var(--navy); border-radius: 8px; padding: 8px 12px; }
+.inv3-metabox span { display: block; font-size: 9px; font-weight: 700; letter-spacing: 0.06em; color: #46506b; }
+.inv3-metabox b { font-size: 15px; }
+.inv3-invno { font-size: 9px; color: #8a93ab; margin-top: 2px; }
+
+.inv3-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.inv3-table th {
+  background: var(--navy); color: #fff; font-size: 9px; text-transform: uppercase;
+  letter-spacing: 0.05em; padding: 7px 6px; border: 1px solid var(--navy); text-align: left;
+}
+.inv3-table th span { font-weight: 400; font-size: 8px; opacity: 0.8; text-transform: none; }
+.inv3-table td { border: 1px solid #c6cede; padding: 8px 6px; vertical-align: top; color: var(--navy); }
+.inv3-table .num { text-align: right; white-space: nowrap; font-weight: 600; }
+.inv3-car { text-align: center; min-width: 110px; }
+.inv3-car img { width: 100px; max-width: 100%; border-radius: 6px; display: block; margin: 0 auto 6px; }
+.inv3-carname { font-weight: 800; font-size: 11px; }
+.inv3-carlabel { color: var(--gold); font-weight: 700; font-size: 10px; text-transform: uppercase; }
+.inv3-svcs ul { margin: 0; padding-left: 16px; }
+.inv3-svcs li { margin: 3px 0; font-size: 11px; }
+
+.inv3-totals { margin-top: 12px; }
+.inv3-trow {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  background: var(--navy); color: #fff; padding: 7px 12px; margin-bottom: 3px;
+  border-radius: 4px; font-size: 11px; letter-spacing: 0.03em;
+}
+.inv3-trow span { font-weight: 700; }
+.inv3-trow b { font-size: 13px; }
+.inv3-grand b { color: var(--gold); font-size: 16px; }
+.inv3-due { background: #7e1c1c; }
+.inv3-paid { background: #1a5c3c; }
+
+.inv3-paybox { border: 1.5px solid var(--navy); border-radius: 10px; margin-top: 14px; overflow: hidden; }
+.inv3-payhead { background: var(--navy); color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 0.08em; text-align: center; padding: 6px; }
+.inv3-paybody { padding: 10px 14px; display: flex; flex-wrap: wrap; gap: 8px 24px; }
+.inv3-payitem span { display: block; font-size: 8px; font-weight: 700; letter-spacing: 0.06em; color: #46506b; }
+.inv3-payitem b { font-size: 14px; }
+.inv3-paynum { font-size: 18px !important; letter-spacing: 0.05em; }
+
+.inv3-thanks { margin-top: 16px; }
+.inv3-script { font-family: 'Snell Roundhand', 'Segoe Script', 'Brush Script MT', cursive; color: var(--gold); font-size: 24px; }
+.inv3-thanksub { font-size: 9px; font-weight: 700; letter-spacing: 0.1em; color: #46506b; margin-top: 2px; }
+.inv3-notes { font-size: 11px; color: #46506b; margin-top: 8px; }
+.inv3-sigsub { font-size: 9px; color: #8a93ab; }
+.inv3-footerimg { width: calc(100% + 36px); margin: 14px -18px -4px; display: block; }
+.inv3-tagbar {
+  margin: 14px -18px -18px; padding: 10px 14px;
+  background: var(--navy); color: #fff; border-top: 3px solid var(--gold);
+  text-align: center; font-style: italic; font-size: 12px; letter-spacing: 0.06em;
+  border-radius: 0 0 var(--radius) var(--radius);
+}
+.inv3-footerimg + .inv3-tagbar { margin-top: 0; }
+
+@media print {
+  .inv3-table th, .inv3-trow, .inv3-payhead, .inv3-tagbar { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .inv3-table td { color: #1c2b4a; }
+}
+
 /* toast */
 #toast {
   position: fixed;

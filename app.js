@@ -46,6 +46,8 @@ function freshState() {
       payName: 'Mohammed Ali Bukar Fatoma',
       payNumber: '8059604694',
       payBank: 'OPay',
+      instagram: 'fatoma_autocare',
+      footerImg: '',
       signatureName: 'Mohammed Ali Bukar Fatoma',
       signatureImg: '',
       accent: '#c8102e',
@@ -68,8 +70,12 @@ try {
 db.settings = { ...freshState().settings, ...db.settings };
 // older data: catalog items default to plain services
 db.services.forEach((s) => { if (!s.type) s.type = 'service'; });
-// older invoices: flat discount → typed discount, and add payment tracking
-db.invoices.forEach((i) => {
+// older invoices: flat items → vehicle sections, typed discount, payment tracking
+function migrateInvoice(i) {
+  if (!i.sections) {
+    i.sections = [{ vehicleId: '', carName: '', img: '', label: '', discount: 0, items: i.items || [] }];
+    delete i.items;
+  }
   if (i.discountType === undefined) {
     i.discountType = 'amount';
     i.discountValue = Number(i.discount) || 0;
@@ -77,7 +83,8 @@ db.invoices.forEach((i) => {
   if (i.amountPaid === undefined) {
     i.amountPaid = i.status === 'paid' ? invoiceTotal(i) : 0;
   }
-});
+}
+db.invoices.forEach(migrateInvoice);
 
 function save() {
   localStorage.setItem(STORE_KEY, JSON.stringify(db));
@@ -122,6 +129,16 @@ function fmtDate(iso) {
   const d = parseISO(iso);
   if (!d) return '—';
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// "27TH JUNE, 2026" — the style used on the printed invoice
+function fmtDateFancy(iso) {
+  const d = parseISO(iso);
+  if (!d) return '—';
+  const n = d.getDate();
+  const suf = n % 10 === 1 && n !== 11 ? 'ST' : n % 10 === 2 && n !== 12 ? 'ND' : n % 10 === 3 && n !== 13 ? 'RD' : 'TH';
+  const month = d.toLocaleDateString('en', { month: 'long' }).toUpperCase();
+  return `${n}${suf} ${month}, ${d.getFullYear()}`;
 }
 
 function fmtDateShort(iso) {
@@ -175,14 +192,18 @@ function jobTotal(job) {
   return t;
 }
 
+function sectionSubtotal(sec) {
+  return (sec.items || []).reduce((t, it) => t + (Number(it.qty) || 1) * (Number(it.price) || 0), 0);
+}
 function invoiceSubtotal(inv) {
-  return inv.items.reduce((t, it) => t + (Number(it.qty) || 1) * (Number(it.price) || 0), 0);
+  return (inv.sections || []).reduce((t, s) => t + sectionSubtotal(s), 0);
 }
 function invoiceDiscount(inv) {
   const sub = invoiceSubtotal(inv);
-  let d = 0;
-  if (inv.discountType === 'percent') d = sub * (Number(inv.discountValue) || 0) / 100;
-  else d = Number(inv.discountValue ?? inv.discount) || 0;
+  // per-vehicle discounts plus the invoice-level one
+  let d = (inv.sections || []).reduce((t, s) => t + (Number(s.discount) || 0), 0);
+  if (inv.discountType === 'percent') d += sub * (Number(inv.discountValue) || 0) / 100;
+  else d += Number(inv.discountValue ?? inv.discount) || 0;
   return Math.min(d, sub); // discount can never exceed the subtotal
 }
 function invoiceTotal(inv) {
@@ -477,6 +498,7 @@ function clientDetailHTML(id) {
   (c.vehicles || []).forEach((v) => {
     html += `
       <div class="listline">
+        ${v.img ? `<img src="${esc(v.img)}" alt="" style="width:64px;height:44px;object-fit:cover;border-radius:8px;border:1px solid var(--line);flex-shrink:0">` : ''}
         <div class="grow">
           <b>${esc([v.year, v.make, v.model].filter(Boolean).join(' '))}</b>
           <div class="muted small">${esc([v.color, v.plate ? 'Plate: ' + v.plate : ''].filter(Boolean).join(' · '))}</div>
@@ -546,6 +568,11 @@ function renderVehicleRows() {
         <div class="field"><label>Plate</label><input data-vi="${i}" data-vk="plate" value="${esc(v.plate || '')}"></div>
         <div class="field"><label>Notes</label><input data-vi="${i}" data-vk="notes" value="${esc(v.notes || '')}" placeholder="Pet hair, tint…"></div>
       </div>
+      <div class="row" style="gap:10px;margin-bottom:10px">
+        ${v.img ? `<img src="${esc(v.img)}" alt="" style="width:72px;height:48px;object-fit:cover;border-radius:8px;border:1px solid var(--line)">` : ''}
+        <button class="btn small ghost" onclick="pickVehicleImg(${i})">${v.img ? 'Change photo' : '📷 Add photo'}</button>
+        ${v.img ? `<button class="btn small danger" onclick="window._formVehicles[${i}].img='';renderVehicleRows()">✕</button>` : ''}
+      </div>
       <button class="btn small danger" onclick="removeVehicleRow(${i})">Remove vehicle</button>
     </div>`).join('');
   host.querySelectorAll('input[data-vi]').forEach((inp) => {
@@ -554,8 +581,35 @@ function renderVehicleRows() {
 }
 
 function addVehicleRow() {
-  window._formVehicles.push({ id: uid(), year: '', make: '', model: '', color: '', plate: '', notes: '' });
+  window._formVehicles.push({ id: uid(), year: '', make: '', model: '', color: '', plate: '', notes: '', img: '' });
   renderVehicleRows();
+}
+
+// photo of the vehicle — shown on invoices, stored downscaled on-device
+function pickVehicleImg(i) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*';
+  input.onchange = () => {
+    const file = input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, 480 / img.width);
+        const c = document.createElement('canvas');
+        c.width = Math.round(img.width * scale);
+        c.height = Math.round(img.height * scale);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        window._formVehicles[i].img = c.toDataURL('image/jpeg', 0.82);
+        renderVehicleRows();
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  };
+  input.click();
 }
 
 function removeVehicleRow(i) {
@@ -913,85 +967,102 @@ function invoiceDetailHTML(id) {
   const hasPayInfo = s.payName || s.payNumber || s.payBank;
   const discLabel = inv.discountType === 'percent' ? `DISCOUNT (${Number(inv.discountValue) || 0}%)` : 'DISCOUNT';
 
+  const sections = inv.sections || [];
   return `
     <button class="btn small ghost no-print" onclick="nav('invoices')">‹ Invoices</button>
-    <div class="inv-paper" style="margin-top:12px">
-      <div class="inv2-head">
-        <div class="inv2-brand">
-          ${s.logoImg ? `<img class="inv2-logoimg" src="${esc(s.logoImg)}" alt="">` : `<div class="inv2-logo">${esc(s.logo)}</div>`}
-          <div><b style="font-size:18px">${esc(s.bizName)}</b></div>
-        </div>
-        <div class="inv2-meta">
-          <div class="inv2-title">INVOICE</div>
-          <div class="inv2-metarow"><span>INVOICE NO:</span><b>${esc(inv.number)}</b></div>
-          <div class="inv2-metarow"><span>DATE:</span><b>${fmtDate(inv.dateIssued)}</b></div>
-          ${inv.dueDate ? `<div class="inv2-metarow"><span>DUE DATE:</span><b>${fmtDate(inv.dueDate)}</b></div>` : ''}
+    <div class="inv-paper inv3" style="margin-top:12px">
+      <div class="inv3-head">
+        ${s.logoImg ? `<img class="inv3-logoimg" src="${esc(s.logoImg)}" alt="">` : `<div class="inv2-logo">${esc(s.logo)}</div>`}
+        <div class="inv3-biz">
+          <b>${esc(s.bizName).toUpperCase()}</b>
+          ${s.address ? `<div>📍 ${esc(s.address)}</div>` : ''}
+          ${s.phone ? `<div>📞 ${esc(s.phone)}</div>` : ''}
+          ${s.instagram ? `<div>📷 ${esc(s.instagram)}</div>` : ''}
+          ${s.tagline ? `<div class="inv3-tag">…${esc(s.tagline)}</div>` : ''}
         </div>
       </div>
 
-      <div class="inv2-parties">
-        <div class="grow">
-          <div class="inv2-lbl">BILLED TO:</div>
-          <div class="inv2-billname">${esc(c?.name || inv.billTo || '—')}</div>
-          ${c?.phone ? `<div class="muted small">${esc(c.phone)}</div>` : ''}
+      <div class="inv3-title">INVOICE</div>
+
+      <div class="inv3-meta">
+        <div class="inv3-metabox grow">
+          <span>CUSTOMER NAME:</span>
+          <b>${esc(c?.name || inv.billTo || '—')}</b>
         </div>
-        <div>
-          <div class="inv2-lbl">FROM:</div>
-          <b>${esc(s.bizName)}</b>
-          ${s.phone ? `<div class="muted small">📞 ${esc(s.phone)}</div>` : ''}
-          ${s.address ? `<div class="muted small">📍 ${esc(s.address)}</div>` : ''}
+        <div class="inv3-metabox">
+          <span>DATE:</span>
+          <b>${fmtDateFancy(inv.dateIssued)}</b>
+          <div class="inv3-invno">${esc(inv.number)}</div>
         </div>
       </div>
 
       <div style="overflow-x:auto">
-      <table class="inv-table inv2-table">
-        <thead><tr><th>S/N</th><th>Description</th><th class="num">Qty</th><th class="num">Unit Price (${esc(cur)})</th><th class="num">Amount (${esc(cur)})</th></tr></thead>
+      <table class="inv3-table">
+        <thead><tr>
+          <th>S/N</th><th>Car Details</th><th>Service(s) Provided</th>
+          <th class="num">Total<br><span>(before discount)</span></th>
+          <th class="num">Total<br><span>(after discount)</span></th>
+        </tr></thead>
         <tbody>
-          ${inv.items.map((it, i) => `<tr>
-            <td>${i + 1}</td>
-            <td>${esc(it.name)}</td>
-            <td class="num">${Number(it.qty) || 1}</td>
-            <td class="num">${moneyBare(it.price)}</td>
-            <td class="num">${moneyBare((Number(it.qty) || 1) * (Number(it.price) || 0))}</td>
-          </tr>`).join('')}
+          ${sections.map((sec, i) => {
+            const before = sectionSubtotal(sec);
+            const after = Math.max(0, before - (Number(sec.discount) || 0));
+            return `<tr>
+              <td>${i + 1}.</td>
+              <td class="inv3-car">
+                ${sec.img ? `<img src="${esc(sec.img)}" alt="">` : ''}
+                ${sec.carName ? `<div class="inv3-carname">${esc(sec.carName)}</div>` : ''}
+                ${sec.label ? `<div class="inv3-carlabel">${esc(sec.label)}</div>` : ''}
+              </td>
+              <td class="inv3-svcs"><ul>${sec.items.map((it) =>
+                `<li>${esc(it.name)}${(Number(it.qty) || 1) > 1 ? ` ×${it.qty}` : ''}</li>`).join('')}</ul></td>
+              <td class="num">${cur} ${moneyBare(before)}</td>
+              <td class="num">${cur} ${moneyBare(after)}</td>
+            </tr>`;
+          }).join('')}
         </tbody>
       </table>
       </div>
 
-      <div class="inv-totals">
-        <div class="row"><span class="muted">SUBTOTAL</span><span>${moneyBare(sub)}</span></div>
-        ${disc ? `<div class="row"><span class="muted">${discLabel}</span><span>−${moneyBare(disc)}</span></div>` : ''}
-        ${Number(inv.taxRate) ? `<div class="row"><span class="muted">TAX (${inv.taxRate}%)</span><span>${moneyBare(tax)}</span></div>` : ''}
-        ${delivery !== '' && delivery != null ? `<div class="row"><span class="muted">DELIVERY</span><span>${moneyBare(delivery)}</span></div>` : ''}
-        <div class="row inv2-grand"><span>TOTAL</span><span>${money(total)}</span></div>
+      <div class="inv3-totals">
+        <div class="inv3-trow"><span>GRAND TOTAL (BEFORE DISCOUNT):</span><b>${cur} ${moneyBare(sub)}</b></div>
+        <div class="inv3-trow"><span>TOTAL DISCOUNT:</span><b>${cur} ${moneyBare(disc)}</b></div>
+        ${Number(inv.taxRate) ? `<div class="inv3-trow"><span>TAX (${inv.taxRate}%):</span><b>${cur} ${moneyBare(tax)}</b></div>` : ''}
+        ${Number(delivery) ? `<div class="inv3-trow"><span>DELIVERY:</span><b>${cur} ${moneyBare(delivery)}</b></div>` : ''}
+        <div class="inv3-trow inv3-grand"><span>GRAND TOTAL (AFTER DISCOUNT):</span><b>${cur} ${moneyBare(total)}</b></div>
         ${st === 'part' ? `
-          <div class="row"><span class="muted">AMOUNT PAID</span><span>${moneyBare(inv.amountPaid)}</span></div>
-          <div class="row"><span class="muted"><b>BALANCE DUE</b></span><span style="color:var(--danger)"><b>${moneyBare(balance)}</b></span></div>` : ''}
-        ${st === 'paid' ? `<div class="row"><span class="muted">Paid</span><span style="color:var(--ok)">✓ ${fmtDate(inv.paidDate)}</span></div>` : ''}
+          <div class="inv3-trow"><span>AMOUNT PAID:</span><b>${cur} ${moneyBare(inv.amountPaid)}</b></div>
+          <div class="inv3-trow inv3-due"><span>BALANCE DUE:</span><b>${cur} ${moneyBare(balance)}</b></div>` : ''}
+        ${st === 'paid' ? `<div class="inv3-trow inv3-paid"><span>PAID:</span><b>${fmtDateFancy(inv.paidDate)}</b></div>` : ''}
       </div>
 
-      <div class="inv2-thanks">${esc(s.invoiceFooter || '')}</div>
-      ${inv.notes ? `<div class="muted small" style="margin-top:8px">${esc(inv.notes)}</div>` : ''}
+      ${hasPayInfo ? `
+      <div class="inv3-paybox">
+        <div class="inv3-payhead">PAYMENT DETAILS</div>
+        <div class="inv3-paybody">
+          ${s.payNumber ? `<div class="inv3-payitem"><span>ACCOUNT NUMBER:</span><b class="inv3-paynum">${esc(s.payNumber)}</b></div>` : ''}
+          ${s.payBank ? `<div class="inv3-payitem"><span>PAYMENT METHOD:</span><b>${esc(s.payBank)}</b></div>` : ''}
+          ${s.payName ? `<div class="inv3-payitem"><span>ACCOUNT NAME:</span><b>${esc(s.payName)}</b></div>` : ''}
+        </div>
+      </div>` : ''}
+
+      <div class="inv3-thanks">
+        <div class="inv3-script">Thank You!</div>
+        ${s.invoiceFooter ? `<div class="inv3-thanksub">${esc(s.invoiceFooter).toUpperCase()}</div>` : ''}
+      </div>
+      ${inv.notes ? `<div class="inv3-notes">${esc(inv.notes)}</div>` : ''}
 
       ${s.signatureName || s.signatureImg ? `
-      <div style="margin-top:18px">
+      <div style="margin-top:14px">
         ${s.signatureImg
-          ? `<img src="${esc(s.signatureImg)}" alt="" style="height:46px;max-width:180px;object-fit:contain;display:block">`
-          : `<div style="width:180px;border-bottom:1px solid var(--line);height:26px"></div>`}
-        <b style="font-size:14px">${esc(s.signatureName)}</b>
-        <div class="muted small">Authorized signature</div>
+          ? `<img src="${esc(s.signatureImg)}" alt="" style="height:40px;max-width:160px;object-fit:contain;display:block">`
+          : `<div style="width:160px;border-bottom:1px solid #c6cede;height:22px"></div>`}
+        <b style="font-size:13px">${esc(s.signatureName)}</b>
+        <div class="inv3-sigsub">Authorized signature</div>
       </div>` : ''}
 
-      ${hasPayInfo ? `
-      <div class="inv2-paybox">
-        <div class="inv2-paylbl">💳 PAYMENT INFORMATION</div>
-        <div class="muted small" style="margin:6px 0 10px">Please make payment to the account below:</div>
-        ${s.payName ? `<div class="inv2-payrow"><span>ACCOUNT NAME</span><b>${esc(s.payName)}</b></div>` : ''}
-        ${s.payNumber ? `<div class="inv2-payrow"><span>ACCOUNT NUMBER</span><b>${esc(s.payNumber)}</b></div>` : ''}
-        ${s.payBank ? `<div class="inv2-payrow"><span>BANK / WALLET</span><b>${esc(s.payBank)}</b></div>` : ''}
-      </div>` : ''}
-
-      ${s.bottomTagline ? `<div class="inv2-tagbar">${esc(s.bottomTagline)}</div>` : ''}
+      ${s.footerImg ? `<img class="inv3-footerimg" src="${esc(s.footerImg)}" alt="">` : ''}
+      ${s.bottomTagline ? `<div class="inv3-tagbar">${esc(s.bottomTagline)}</div>` : ''}
     </div>
 
     <div class="no-print">
@@ -1039,10 +1110,14 @@ function markUnpaid(id) {
 function openPaymentForm(id) {
   const inv = getInvoice(id);
   const balance = invoiceBalance(inv);
+  // backdated invoice → default the acknowledgment to the invoice date, not today
+  const defaultDate = inv.dateIssued && inv.dateIssued < todayISO() ? inv.dateIssued : todayISO();
   const body = `
     <div class="muted" style="margin-bottom:12px">Total ${money(invoiceTotal(inv))} · already paid ${money(inv.amountPaid || 0)} · balance <b style="color:var(--danger)">${money(balance)}</b></div>
     <div class="field"><label>Amount received (${esc(db.settings.currency)})</label>
       <input id="pay_amount" type="number" inputmode="decimal" value="${balance}" min="0"></div>
+    <div class="field"><label>Date payment was received</label>
+      <input id="pay_date" type="date" value="${defaultDate}"></div>
     <div class="btnrow"><button class="btn block" onclick="recordPayment('${id}')">Record payment</button></div>`;
   openModal('Record payment — ' + inv.number, body);
 }
@@ -1050,15 +1125,17 @@ function openPaymentForm(id) {
 function recordPayment(id) {
   const inv = getInvoice(id);
   const amt = Number(document.getElementById('pay_amount').value);
+  const payDate = document.getElementById('pay_date').value || todayISO();
   if (!amt || amt <= 0) { toast('Enter a valid amount'); return; }
   inv.amountPaid = (Number(inv.amountPaid) || 0) + amt;
   if (inv.amountPaid >= invoiceTotal(inv) - 0.005) {
     inv.amountPaid = invoiceTotal(inv);
     inv.status = 'paid';
-    inv.paidDate = todayISO();
+    inv.paidDate = payDate;
     toast('Fully paid 💰');
   } else {
     inv.status = 'unpaid';
+    inv.paidDate = payDate; // date of the most recent part-payment
     toast('Part-payment recorded — ' + money(invoiceBalance(inv)) + ' left');
   }
   save();
@@ -1098,7 +1175,12 @@ function shareInvoice(id) {
   const inv = getInvoice(id);
   const c = getClient(inv.clientId);
   const s = db.settings;
-  const lines = inv.items.map((it) => `• ${it.name} — ${money((Number(it.qty) || 1) * (Number(it.price) || 0))}`).join('\n');
+  const lines = (inv.sections || []).map((sec) => {
+    const head = sec.carName ? `${sec.carName}${sec.label ? ' — ' + sec.label : ''}\n` : '';
+    const items = sec.items.map((it) => `• ${it.name}${(Number(it.qty) || 1) > 1 ? ' ×' + it.qty : ''} — ${money((Number(it.qty) || 1) * (Number(it.price) || 0))}`).join('\n');
+    const secDisc = Number(sec.discount) || 0;
+    return head + items + (secDisc ? `\nDiscount: −${money(secDisc)}` : '');
+  }).join('\n\n');
   const delivery = Number(inv.delivery) || 0;
   const st = invoiceStatus(inv);
   const payStatus = st === 'paid' ? '\nStatus: PAID ✓'
@@ -1171,10 +1253,11 @@ async function exportInvoicePDF(id) {
     const s = db.settings;
     const c = getClient(inv.clientId);
     const cur = s.currency;
-    const RED = s.accent || '#c8102e';
-    const BLACK = '#15151a';
-    const GREY = '#666666';
-    const LINE = '#cccccc';
+    const NAVY = '#1c2b4a';
+    const GOLD = '#e9a13b';
+    const GREY = '#46506b';
+    const LINE = '#c6cede';
+    const noB = [false, false, false, false];
 
     const sub = invoiceSubtotal(inv);
     const disc = invoiceDiscount(inv);
@@ -1184,194 +1267,216 @@ async function exportInvoicePDF(id) {
     const st = invoiceStatus(inv);
     const nb = (n) => moneyBare(n);
 
-    const itemRows = inv.items.map((it, i) => [
-      { text: String(i + 1), style: 'cell', alignment: 'center' },
-      { text: it.name || '', style: 'cell' },
-      { text: String(Number(it.qty) || 1), style: 'cell', alignment: 'center' },
-      { text: nb(it.price), style: 'cell', alignment: 'right' },
-      { text: nb((Number(it.qty) || 1) * (Number(it.price) || 0)), style: 'cell', alignment: 'right' },
-    ]);
+    const secRows = (inv.sections || []).map((sec, i) => {
+      const before = sectionSubtotal(sec);
+      const after = Math.max(0, before - (Number(sec.discount) || 0));
+      return [
+        { text: (i + 1) + '.', style: 'cell', alignment: 'center' },
+        {
+          stack: [
+            ...(sec.img ? [{ image: 'vimg' + i, fit: [84, 50], alignment: 'center', margin: [0, 0, 0, 3] }] : []),
+            ...(sec.carName ? [{ text: sec.carName, bold: true, fontSize: 8, alignment: 'center' }] : []),
+            ...(sec.label ? [{ text: sec.label, color: GOLD, bold: true, fontSize: 7, alignment: 'center', margin: [0, 1, 0, 0] }] : []),
+          ],
+          style: 'cell',
+        },
+        { ul: sec.items.map((it) => (it.name || '') + ((Number(it.qty) || 1) > 1 ? ' ×' + it.qty : '')), fontSize: 8, style: 'cell' },
+        { text: cur + ' ' + nb(before), style: 'cell', alignment: 'right', bold: true },
+        { text: cur + ' ' + nb(after), style: 'cell', alignment: 'right', bold: true },
+      ];
+    });
 
     const totalsBody = [];
     const trow = (label, value, opts = {}) => totalsBody.push([
-      { text: label, fontSize: 9, bold: !!opts.bold, color: opts.color || GREY, alignment: 'right', border: [false, false, false, false], margin: [0, 2, 8, 2] },
-      { text: value, fontSize: opts.big ? 12 : 10, bold: !!opts.bold, color: opts.fill ? '#fff' : (opts.color || BLACK), alignment: 'right', fillColor: opts.fill || null, border: [false, false, false, false], margin: [4, opts.big ? 4 : 2, 4, opts.big ? 4 : 2] },
+      { text: label, color: '#fff', bold: true, fontSize: 9, fillColor: opts.fill || NAVY, margin: [10, 4, 4, 4], border: noB },
+      { text: value, color: opts.gold ? GOLD : '#fff', bold: true, fontSize: opts.gold ? 13 : 10, alignment: 'right', fillColor: opts.fill || NAVY, margin: [4, opts.gold ? 3 : 4, 10, opts.gold ? 3 : 4], border: noB },
     ]);
-    trow('SUBTOTAL', nb(sub));
-    if (disc) trow(inv.discountType === 'percent' ? `DISCOUNT (${Number(inv.discountValue) || 0}%)` : 'DISCOUNT', '−' + nb(disc));
-    if (Number(inv.taxRate)) trow(`TAX (${inv.taxRate}%)`, nb(tax));
-    trow('DELIVERY', nb(delivery));
-    trow('TOTAL', cur + nb(total), { bold: true, fill: RED, big: true });
+    trow('GRAND TOTAL (BEFORE DISCOUNT):', cur + ' ' + nb(sub));
+    trow('TOTAL DISCOUNT:', cur + ' ' + nb(disc));
+    if (Number(inv.taxRate)) trow(`TAX (${inv.taxRate}%):`, cur + ' ' + nb(tax));
+    if (delivery) trow('DELIVERY:', cur + ' ' + nb(delivery));
+    trow('GRAND TOTAL (AFTER DISCOUNT):', cur + ' ' + nb(total), { gold: true });
     if (st === 'part') {
-      trow('AMOUNT PAID', nb(inv.amountPaid));
-      trow('BALANCE DUE', cur + nb(invoiceBalance(inv)), { bold: true, color: RED });
+      trow('AMOUNT PAID:', cur + ' ' + nb(inv.amountPaid));
+      trow('BALANCE DUE:', cur + ' ' + nb(invoiceBalance(inv)), { fill: '#7e1c1c' });
     }
-    if (st === 'paid') trow('PAID', fmtDate(inv.paidDate), { color: '#1a9a5c', bold: true });
+    if (st === 'paid') trow('PAID:', fmtDateFancy(inv.paidDate), { fill: '#1a5c3c' });
 
     const hasPayInfo = s.payName || s.payNumber || s.payBank;
-    const payRows = [
-      s.payName && ['ACCOUNT NAME', s.payName],
-      s.payNumber && ['ACCOUNT NUMBER', s.payNumber],
-      s.payBank && ['BANK / WALLET', s.payBank],
-    ].filter(Boolean);
+
+    const navyBox = { hLineWidth: () => 1.2, vLineWidth: () => 1.2, hLineColor: () => NAVY, vLineColor: () => NAVY };
+
+    // the constant footer picture is anchored to the page bottom (like the
+    // printed template), so measure it and reserve bottom-margin space for it
+    let foot = null;
+    if (s.footerImg) {
+      foot = await new Promise((resolve) => {
+        const im = new Image();
+        im.onload = () => {
+          const ratio = im.height / im.width;
+          let w = 595.28, h = w * ratio;
+          if (h > 120) { h = 120; w = h / ratio; }
+          resolve({ src: s.footerImg, w, h });
+        };
+        im.onerror = () => resolve(null);
+        im.src = s.footerImg;
+      });
+    }
 
     const dd = {
       pageSize: 'A4',
-      pageMargins: [46, 40, 46, 66],
-      defaultStyle: { font: 'Roboto', fontSize: 10, color: BLACK },
+      pageMargins: [46, 36, 46, (foot ? foot.h : 0) + 34],
+      defaultStyle: { font: 'Roboto', fontSize: 10, color: NAVY },
+      // register every picture by name — data URIs inside the dynamic footer
+      // function get mis-resolved by pdfmake otherwise
+      images: {
+        ...(logo ? { logoimg: logo } : {}),
+        ...(s.signatureImg ? { sigimg: s.signatureImg } : {}),
+        ...(foot ? { footimg: foot.src } : {}),
+        ...(inv.sections || []).reduce((acc, sec, i) => { if (sec.img) acc['vimg' + i] = sec.img; return acc; }, {}),
+      },
       styles: {
-        cell: { fontSize: 10, margin: [4, 5, 4, 5] },
-        th: { fontSize: 9, bold: true, color: '#fff', fillColor: RED, margin: [4, 6, 4, 6] },
-        redLbl: { fontSize: 8, bold: true, color: '#fff', fillColor: RED },
+        cell: { fontSize: 9, margin: [4, 4, 4, 4] },
+        th: { fontSize: 8, bold: true, color: '#fff', fillColor: NAVY, margin: [4, 4, 4, 4] },
       },
       content: [
-        // header: brand left, INVOICE meta right
+        // header: logo left, business details right
+        {
+          columns: [
+            { width: 'auto', stack: logo ? [{ image: 'logoimg', fit: [120, 56] }] : [{ text: s.bizName, fontSize: 18, bold: true }] },
+            {
+              width: '*',
+              stack: [
+                { text: s.bizName.toUpperCase(), fontSize: 13, bold: true, alignment: 'right' },
+                ...(s.address ? [{ text: s.address, fontSize: 8, color: GREY, alignment: 'right', margin: [0, 2, 0, 0] }] : []),
+                ...(s.phone ? [{ text: s.phone, fontSize: 8, color: GREY, alignment: 'right', margin: [0, 1, 0, 0] }] : []),
+                ...(s.instagram ? [{ text: s.instagram, fontSize: 8, color: GREY, alignment: 'right', margin: [0, 1, 0, 0] }] : []),
+                ...(s.tagline ? [{ text: '…' + s.tagline, fontSize: 8, italics: true, color: GOLD, alignment: 'right', margin: [0, 2, 0, 0] }] : []),
+              ],
+            },
+          ],
+          margin: [0, 0, 0, 8],
+        },
+
+        { text: 'INVOICE', fontSize: 24, bold: true, alignment: 'center', margin: [0, 2, 0, 8] },
+
+        // customer name / date boxes
         {
           columns: [
             {
               width: '*',
-              stack: [
-                ...(logo ? [{ image: logo, fit: [110, 46], margin: [0, 0, 0, 4] }] : []),
-                { text: s.bizName, fontSize: 16, bold: true },
-              ],
+              table: { widths: ['*'], body: [[{
+                stack: [
+                  { text: 'CUSTOMER NAME:', fontSize: 7, bold: true, color: GREY },
+                  { text: c?.name || inv.billTo || '—', fontSize: 13, bold: true, margin: [0, 2, 0, 0] },
+                ],
+                margin: [8, 5, 8, 5], border: [true, true, true, true],
+              }]] },
+              layout: navyBox,
             },
             {
-              width: 'auto',
-              stack: [
-                { text: 'INVOICE', fontSize: 24, bold: true, alignment: 'right', margin: [0, 0, 0, 6] },
-                {
-                  table: {
-                    body: [
-                      [{ text: 'INVOICE NO:', style: 'redLbl', margin: [4, 2, 4, 2] }, { text: inv.number, fontSize: 9, bold: true, alignment: 'right', margin: [4, 2, 0, 2] }],
-                      [{ text: 'DATE:', style: 'redLbl', margin: [4, 2, 4, 2] }, { text: fmtDate(inv.dateIssued), fontSize: 9, alignment: 'right', margin: [4, 2, 0, 2] }],
-                      ...(inv.dueDate ? [[{ text: 'DUE DATE:', style: 'redLbl', margin: [4, 2, 4, 2] }, { text: fmtDate(inv.dueDate), fontSize: 9, alignment: 'right', margin: [4, 2, 0, 2] }]] : []),
-                    ],
-                  },
-                  layout: 'noBorders',
-                },
-              ],
+              width: 170,
+              table: { widths: ['*'], body: [[{
+                stack: [
+                  { text: 'DATE:', fontSize: 7, bold: true, color: GREY },
+                  { text: fmtDateFancy(inv.dateIssued), fontSize: 11, bold: true, margin: [0, 2, 0, 0] },
+                  { text: inv.number, fontSize: 7, color: '#8a93ab', margin: [0, 2, 0, 0] },
+                ],
+                margin: [8, 5, 8, 5], border: [true, true, true, true],
+              }]] },
+              layout: navyBox,
             },
           ],
-        },
-        // full-width red rule (canvas lines get displaced by pdfmake flow — use a filled cell)
-        {
-          table: { widths: ['*'], heights: [3], body: [[{ text: '', fontSize: 1, fillColor: RED, border: [false, false, false, false] }]] },
-          layout: 'noBorders',
-          margin: [0, 8, 0, 14],
-        },
-
-        // billed to / from
-        {
-          columns: [
-            {
-              width: '*',
-              stack: [
-                { text: 'BILLED TO:', fontSize: 8, bold: true, color: RED, margin: [0, 0, 0, 3] },
-                { text: c?.name || inv.billTo || '—', fontSize: 15, bold: true },
-                ...(c?.phone ? [{ text: c.phone, fontSize: 9, color: GREY, margin: [0, 2, 0, 0] }] : []),
-                ...(c?.address ? [{ text: c.address, fontSize: 9, color: GREY }] : []),
-              ],
-            },
-            {
-              width: 'auto',
-              stack: [
-                { text: 'FROM:', fontSize: 8, bold: true, color: RED, margin: [0, 0, 0, 3] },
-                { text: s.bizName, fontSize: 10, bold: true },
-                ...(s.phone ? [{ text: s.phone, fontSize: 9, color: GREY }] : []),
-                ...(s.address ? [{ text: s.address, fontSize: 9, color: GREY }] : []),
-              ],
-            },
-          ],
-          margin: [0, 0, 0, 16],
-        },
-
-        // items table
-        {
-          table: {
-            headerRows: 1,
-            widths: [28, '*', 34, 90, 90],
-            body: [
-              [
-                { text: 'S/N', style: 'th', alignment: 'center' },
-                { text: 'DESCRIPTION', style: 'th' },
-                { text: 'QTY', style: 'th', alignment: 'center' },
-                { text: `UNIT PRICE (${cur})`, style: 'th', alignment: 'right' },
-                { text: `AMOUNT (${cur})`, style: 'th', alignment: 'right' },
-              ],
-              ...itemRows,
-            ],
-          },
-          layout: {
-            hLineWidth: () => 0.5, vLineWidth: () => 0.5,
-            hLineColor: () => LINE, vLineColor: () => LINE,
-          },
+          columnGap: 10,
           margin: [0, 0, 0, 10],
         },
 
-        // totals (right aligned)
+        // vehicles / services table
         {
-          columns: [
-            { width: '*', text: '' },
-            { width: 'auto', table: { body: totalsBody }, layout: 'noBorders' },
-          ],
-          margin: [0, 0, 0, 12],
+          table: {
+            headerRows: 1,
+            widths: [22, 108, '*', 72, 72],
+            body: [
+              [
+                { text: 'S/N', style: 'th', alignment: 'center' },
+                { text: 'CAR DETAILS', style: 'th', alignment: 'center' },
+                { text: 'SERVICE(S) PROVIDED', style: 'th' },
+                { stack: [{ text: 'TOTAL' }, { text: '(BEFORE DISCOUNT)', fontSize: 6 }], style: 'th', alignment: 'center' },
+                { stack: [{ text: 'TOTAL' }, { text: '(AFTER DISCOUNT)', fontSize: 6 }], style: 'th', alignment: 'center' },
+              ],
+              ...secRows,
+            ],
+          },
+          layout: {
+            hLineWidth: () => 0.7, vLineWidth: () => 0.7,
+            hLineColor: () => LINE, vLineColor: () => LINE,
+          },
+          margin: [0, 0, 0, 8],
         },
 
+        // totals bars
+        {
+          table: { widths: ['*', 130], body: totalsBody },
+          layout: { hLineWidth: () => 2, hLineColor: () => '#fff', vLineWidth: () => 0 },
+          margin: [30, 0, 30, 8],
+        },
+
+        // payment details box
+        ...(hasPayInfo ? [{
+          table: {
+            widths: ['*'],
+            body: [
+              [{ text: 'PAYMENT DETAILS', fontSize: 8, bold: true, color: '#fff', fillColor: NAVY, alignment: 'center', margin: [4, 4, 4, 4], border: [true, true, true, true] }],
+              [{
+                columns: [
+                  ...(s.payNumber ? [{ stack: [{ text: 'ACCOUNT NUMBER:', fontSize: 6.5, bold: true, color: GREY }, { text: s.payNumber, fontSize: 14, bold: true, margin: [0, 2, 0, 0] }] }] : []),
+                  ...(s.payBank ? [{ stack: [{ text: 'PAYMENT METHOD:', fontSize: 6.5, bold: true, color: GREY }, { text: s.payBank, fontSize: 11, bold: true, margin: [0, 3, 0, 0] }] }] : []),
+                  ...(s.payName ? [{ stack: [{ text: 'ACCOUNT NAME:', fontSize: 6.5, bold: true, color: GREY }, { text: s.payName, fontSize: 9, bold: true, margin: [0, 4, 0, 0] }] }] : []),
+                ],
+                columnGap: 12,
+                margin: [8, 6, 8, 6], border: [true, true, true, true],
+              }],
+            ],
+          },
+          layout: navyBox,
+          margin: [55, 0, 55, 8],
+        }] : []),
+
         // thank you + notes
-        ...(s.invoiceFooter ? [{ text: s.invoiceFooter, italics: true, color: RED, fontSize: 13, margin: [0, 0, 0, 4] }] : []),
-        ...(inv.notes ? [{ text: inv.notes, fontSize: 9, color: GREY, margin: [0, 0, 0, 4] }] : []),
+        { text: 'Thank You!', italics: true, bold: true, color: GOLD, fontSize: 16, margin: [0, 0, 0, 1] },
+        ...(s.invoiceFooter ? [{ text: s.invoiceFooter.toUpperCase(), fontSize: 7.5, bold: true, color: GREY }] : []),
+        ...(inv.notes ? [{ text: inv.notes, fontSize: 8, color: GREY, margin: [0, 6, 0, 0] }] : []),
 
         // signature
         ...(s.signatureName || s.signatureImg ? [
           ...(s.signatureImg
-            ? [{ image: s.signatureImg, fit: [140, 44], margin: [0, 14, 0, 2] }]
+            ? [{ image: 'sigimg', fit: [110, 32], margin: [0, 6, 0, 2] }]
             : [{
-                table: { widths: [160], heights: [1], body: [[{ text: '', fontSize: 1, fillColor: LINE, border: [false, false, false, false] }]] },
+                table: { widths: [140], heights: [1], body: [[{ text: '', fontSize: 1, fillColor: LINE, border: [false, false, false, false] }]] },
                 layout: 'noBorders',
-                margin: [0, 44, 0, 2],
+                margin: [0, 26, 0, 2],
               }]),
-          { text: s.signatureName || '', fontSize: 10, bold: true },
-          { text: 'Authorized signature', fontSize: 8, color: GREY, margin: [0, 1, 0, 0] },
+          { text: s.signatureName || '', fontSize: 9, bold: true },
+          { text: 'Authorized signature', fontSize: 7, color: GREY, margin: [0, 1, 0, 0] },
         ] : []),
 
-        // payment information box
-        ...(hasPayInfo ? [{
-          table: {
-            widths: ['*'],
-            body: [[{
-              border: [true, true, true, true],
-              stack: [
-                // fillColor only paints table cells, so the chip must be its own tiny table
-                { table: { body: [[{ text: 'PAYMENT INFORMATION', style: 'redLbl', fontSize: 9, margin: [6, 3, 6, 3] }]] }, layout: 'noBorders' },
-                { text: 'Please make payment to the account below:', fontSize: 8, color: GREY, margin: [2, 6, 2, 6] },
-                ...payRows.map(([l, v]) => ({
-                  columns: [
-                    { width: 110, text: l, fontSize: 8, bold: true, color: RED, margin: [2, 2, 0, 2] },
-                    { width: '*', text: v, fontSize: 10, bold: true, margin: [0, 1, 2, 2] },
-                  ],
-                })),
-              ],
-              margin: [6, 6, 6, 6],
-            }]],
-          },
-          layout: {
-            hLineWidth: () => 1.5, vLineWidth: () => 1.5,
-            hLineColor: () => RED, vLineColor: () => RED,
-          },
-          margin: [0, 16, 0, 0],
-        }] : []),
       ],
 
       footer: () => ({
-        table: {
-          widths: ['*'],
-          heights: [3, 26],
-          body: [
-            [{ text: '', fontSize: 1, fillColor: RED, border: [false, false, false, false] }],
-            [{ text: s.bottomTagline || '', italics: true, color: '#fff', fillColor: BLACK, alignment: 'center', fontSize: 10, margin: [0, 8, 0, 8], border: [false, false, false, false] }],
-          ],
-        },
-        layout: 'noBorders',
+        stack: [
+          ...(foot ? [{ image: 'footimg', width: foot.w, alignment: 'center' }] : []),
+          {
+            table: {
+              widths: ['*'],
+              heights: [3, 26],
+              body: [
+                [{ text: '', fontSize: 1, fillColor: GOLD, border: [false, false, false, false] }],
+                [{ text: s.bottomTagline || '', italics: true, color: '#fff', fillColor: NAVY, alignment: 'center', fontSize: 9, margin: [0, 8, 0, 8], border: [false, false, false, false] }],
+              ],
+            },
+            layout: 'noBorders',
+          },
+        ],
       }),
     };
 
@@ -1400,23 +1505,38 @@ async function exportInvoicePDF(id) {
 function createInvoiceFromJob(jobId) {
   const j = getJob(jobId);
   const items = [];
+  let label = '';
   (j.serviceIds || []).forEach((sid) => {
     const s = getService(sid);
-    if (s) items.push({ name: s.name, qty: 1, price: s.price });
+    if (s) {
+      items.push({ name: s.name, qty: 1, price: s.price });
+      if (s.type === 'package' && !label) label = s.name.toUpperCase();
+    }
   });
   (j.customItems || []).forEach((it) => items.push({ name: it.name, qty: 1, price: Number(it.price) || 0 }));
   if (j.priceOverride !== '' && j.priceOverride != null && !isNaN(j.priceOverride) && j.priceOverride !== undefined) {
     items.length = 0;
     items.push({ name: 'Detailing service', qty: 1, price: Number(j.priceOverride) });
   }
+  const client = getClient(j.clientId);
+  const v = getVehicle(client, j.vehicleId);
+  // a backdated job produces an invoice dated the day the work was done
+  const issued = j.date || todayISO();
   const inv = {
     id: uid(),
     number: nextInvoiceNumber(),
     clientId: j.clientId,
     jobId: j.id,
-    dateIssued: todayISO(),
-    dueDate: addDays(todayISO(), 14),
-    items,
+    dateIssued: issued,
+    dueDate: addDays(issued, 14),
+    sections: [{
+      vehicleId: j.vehicleId || '',
+      carName: v ? [v.year, v.make, v.model].filter(Boolean).join(' ').toUpperCase() : '',
+      img: v?.img || '',
+      label,
+      discount: 0,
+      items,
+    }],
     taxRate: db.settings.taxRate,
     discountType: 'amount',
     discountValue: 0,
@@ -1434,14 +1554,26 @@ function createInvoiceFromJob(jobId) {
   toast('Invoice ' + inv.number + ' created');
 }
 
+function catalogOptionsHTML() {
+  return CATALOG_TYPES.map(([type, label]) => {
+    const items = db.services.filter((s) => s.active && (s.type || 'service') === type);
+    if (!items.length) return '';
+    return `<optgroup label="${label}">${items.map((s) => `<option value="${s.id}">${esc(s.name)} — ${money(s.price)}</option>`).join('')}</optgroup>`;
+  }).join('');
+}
+
+function blankSection() {
+  return { vehicleId: '', carName: '', img: '', label: '', discount: 0, items: [] };
+}
+
 function openInvoiceForm(id, presetClientId) {
   const inv = id ? getInvoice(id) : null;
-  window._formInvItems = inv ? JSON.parse(JSON.stringify(inv.items)) : [];
+  window._formSections = inv ? JSON.parse(JSON.stringify(inv.sections || [])) : [blankSection()];
   const selClient = inv?.clientId || presetClientId || (db.clients[0] && db.clients[0].id) || '';
 
   const body = `
     <div class="field"><label>Client</label>
-      <select id="fi_client">
+      <select id="fi_client" onchange="renderSections()">
         <option value="">— no client —</option>
         ${db.clients.slice().sort((a, b) => a.name.localeCompare(b.name)).map((c) =>
           `<option value="${c.id}" ${c.id === selClient ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
@@ -1450,26 +1582,16 @@ function openInvoiceForm(id, presetClientId) {
       <div class="field"><label>Issue date</label><input id="fi_date" type="date" value="${inv?.dateIssued || todayISO()}"></div>
       <div class="field"><label>Due date</label><input id="fi_due" type="date" value="${inv?.dueDate || addDays(todayISO(), 14)}"></div>
     </div>
-    <h2 class="section">Line items</h2>
-    <div id="invItems"></div>
-    <div class="row" style="gap:8px">
-      <button class="btn small ghost" onclick="addInvItemRow()">＋ Blank item</button>
-      <select id="fi_addService" style="flex:1;font-family:inherit;font-size:14px;background:var(--bg-raised);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:9px" onchange="addServiceAsItem(this)">
-        <option value="">＋ Add from catalog…</option>
-        ${CATALOG_TYPES.map(([type, label]) => {
-          const items = db.services.filter((s) => s.active && (s.type || 'service') === type);
-          if (!items.length) return '';
-          return `<optgroup label="${label}">${items.map((s) => `<option value="${s.id}">${esc(s.name)} — ${money(s.price)}</option>`).join('')}</optgroup>`;
-        }).join('')}
-      </select>
-    </div>
+    <h2 class="section">Vehicles / items on this invoice</h2>
+    <div id="sectionsHost"></div>
+    <button class="btn small ghost" onclick="addSection()">＋ Add another vehicle</button>
     <div class="field-2" style="margin-top:14px">
-      <div class="field"><label>Discount type</label>
+      <div class="field"><label>Extra discount type</label>
         <select id="fi_discType">
           <option value="amount" ${(inv?.discountType || 'amount') === 'amount' ? 'selected' : ''}>Amount (${esc(db.settings.currency)})</option>
           <option value="percent" ${inv?.discountType === 'percent' ? 'selected' : ''}>Percent (%)</option>
         </select></div>
-      <div class="field"><label>Discount value</label><input id="fi_disc" type="number" inputmode="decimal" value="${inv?.discountValue ?? inv?.discount ?? 0}"></div>
+      <div class="field"><label>Extra discount value</label><input id="fi_disc" type="number" inputmode="decimal" value="${inv?.discountValue ?? 0}"></div>
     </div>
     <div class="field-2">
       <div class="field"><label>Delivery fee (${esc(db.settings.currency)})</label><input id="fi_delivery" type="number" inputmode="decimal" value="${inv?.delivery ?? 0}"></div>
@@ -1478,55 +1600,112 @@ function openInvoiceForm(id, presetClientId) {
     <div class="field"><label>Notes on invoice</label><textarea id="fi_notes">${esc(inv?.notes || '')}</textarea></div>
     <div class="btnrow"><button class="btn block" onclick="saveInvoice('${id || ''}')">Save invoice</button></div>`;
 
-  openModal(id ? 'Edit ' + inv.number : 'New invoice ' + nextInvoiceNumber(), body, () => renderInvItemRows());
+  openModal(id ? 'Edit ' + inv.number : 'New invoice ' + nextInvoiceNumber(), body, () => renderSections());
 }
 
-function renderInvItemRows() {
-  const host = document.getElementById('invItems');
+function renderSections() {
+  const host = document.getElementById('sectionsHost');
   if (!host) return;
-  if (!window._formInvItems.length) {
-    host.innerHTML = '<div class="muted small" style="margin-bottom:10px">No line items yet.</div>';
-    return;
-  }
-  host.innerHTML = window._formInvItems.map((it, i) => `
-    <div class="row" style="gap:6px;margin-bottom:8px">
-      <input data-ii="${i}" data-ik="name" value="${esc(it.name)}" placeholder="Service" style="flex:3;font-family:inherit;font-size:14px;background:var(--bg-raised);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:10px">
-      <input data-ii="${i}" data-ik="qty" type="number" inputmode="numeric" value="${it.qty}" style="flex:1;min-width:0;font-family:inherit;font-size:14px;background:var(--bg-raised);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:10px" title="Qty">
-      <input data-ii="${i}" data-ik="price" type="number" inputmode="decimal" value="${it.price}" style="flex:1.4;min-width:0;font-family:inherit;font-size:14px;background:var(--bg-raised);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:10px" title="Price">
-      <button class="btn small danger" style="padding:8px" onclick="removeInvItemRow(${i})">✕</button>
+  const client = getClient(document.getElementById('fi_client').value);
+  host.innerHTML = window._formSections.map((sec, si) => `
+    <div class="card" style="padding:12px">
+      <div class="row" style="margin-bottom:8px">
+        <b class="grow">Vehicle ${si + 1}</b>
+        ${window._formSections.length > 1 ? `<button class="btn small danger" onclick="removeSection(${si})">Remove</button>` : ''}
+      </div>
+      ${(client?.vehicles || []).length ? `
+      <div class="field"><label>Pick from ${esc(client.name.split(' ')[0])}'s vehicles</label>
+        <select onchange="sectionVehicleChanged(${si}, this.value)">
+          <option value="">— custom / no vehicle —</option>
+          ${client.vehicles.map((v) => `<option value="${v.id}" ${sec.vehicleId === v.id ? 'selected' : ''}>${esc([v.year, v.make, v.model].filter(Boolean).join(' '))}</option>`).join('')}
+        </select></div>` : ''}
+      <div class="row" style="gap:10px;margin-bottom:10px">
+        ${sec.img ? `<img src="${esc(sec.img)}" alt="" style="width:80px;height:52px;object-fit:cover;border-radius:8px;border:1px solid var(--line)">` : ''}
+        <div class="grow">
+          <div class="field" style="margin-bottom:8px"><label>Car name on invoice</label>
+            <input value="${esc(sec.carName)}" placeholder="MERCEDES BENZ E350" oninput="window._formSections[${si}].carName=this.value"></div>
+          <div class="field" style="margin-bottom:0"><label>Package label</label>
+            <input value="${esc(sec.label)}" placeholder="VIP EXCLUSIVE CAR WASH" oninput="window._formSections[${si}].label=this.value"></div>
+        </div>
+      </div>
+      <div>
+        ${sec.items.map((it, ii) => `
+        <div class="row" style="gap:6px;margin-bottom:8px">
+          <input value="${esc(it.name)}" placeholder="Service" oninput="window._formSections[${si}].items[${ii}].name=this.value"
+            style="flex:3;font-family:inherit;font-size:14px;background:var(--bg-raised);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:10px">
+          <input type="number" inputmode="numeric" value="${it.qty ?? 1}" title="Qty" oninput="window._formSections[${si}].items[${ii}].qty=this.value"
+            style="flex:1;min-width:0;font-family:inherit;font-size:14px;background:var(--bg-raised);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:10px">
+          <input type="number" inputmode="decimal" value="${it.price}" title="Price" oninput="window._formSections[${si}].items[${ii}].price=this.value"
+            style="flex:1.4;min-width:0;font-family:inherit;font-size:14px;background:var(--bg-raised);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:10px">
+          <button class="btn small danger" style="padding:8px" onclick="removeSectionItem(${si},${ii})">✕</button>
+        </div>`).join('') || '<div class="muted small" style="margin-bottom:8px">No services yet.</div>'}
+      </div>
+      <div class="row" style="gap:8px">
+        <button class="btn small ghost" onclick="addSectionItem(${si})">＋ Blank</button>
+        <select style="flex:1;font-family:inherit;font-size:14px;background:var(--bg-raised);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:9px" onchange="addSectionCatalogItem(${si}, this)">
+          <option value="">＋ Add from catalog…</option>
+          ${catalogOptionsHTML()}
+        </select>
+      </div>
+      <div class="field" style="margin-top:10px;margin-bottom:0"><label>Discount for this vehicle (${esc(db.settings.currency)})</label>
+        <input type="number" inputmode="decimal" value="${sec.discount || 0}" oninput="window._formSections[${si}].discount=this.value"></div>
     </div>`).join('');
-  host.querySelectorAll('input[data-ii]').forEach((inp) => {
-    inp.oninput = () => { window._formInvItems[Number(inp.dataset.ii)][inp.dataset.ik] = inp.value; };
-  });
 }
 
-function addInvItemRow() {
-  window._formInvItems.push({ name: '', qty: 1, price: '' });
-  renderInvItemRows();
+function sectionVehicleChanged(si, vid) {
+  const client = getClient(document.getElementById('fi_client').value);
+  const sec = window._formSections[si];
+  sec.vehicleId = vid;
+  const v = getVehicle(client, vid);
+  if (v) {
+    sec.carName = [v.year, v.make, v.model].filter(Boolean).join(' ').toUpperCase();
+    sec.img = v.img || '';
+  }
+  renderSections();
 }
 
-function addServiceAsItem(sel) {
+function addSection() {
+  window._formSections.push(blankSection());
+  renderSections();
+}
+
+function removeSection(si) {
+  window._formSections.splice(si, 1);
+  renderSections();
+}
+
+function addSectionItem(si) {
+  window._formSections[si].items.push({ name: '', qty: 1, price: '' });
+  renderSections();
+}
+
+function addSectionCatalogItem(si, sel) {
   const s = getService(sel.value);
   if (s) {
-    window._formInvItems.push({ name: s.name, qty: 1, price: s.price });
-    renderInvItemRows();
+    if (s.type === 'package' && !window._formSections[si].label) {
+      window._formSections[si].label = s.name.toUpperCase();
+    }
+    window._formSections[si].items.push({ name: s.name, qty: 1, price: s.price });
+    renderSections();
   }
   sel.value = '';
 }
 
-function removeInvItemRow(i) {
-  window._formInvItems.splice(i, 1);
-  renderInvItemRows();
+function removeSectionItem(si, ii) {
+  window._formSections[si].items.splice(ii, 1);
+  renderSections();
 }
 
 function saveInvoice(id) {
-  const items = window._formInvItems.filter((it) => it.name);
-  if (!items.length) { toast('Add at least one line item'); return; }
+  const sections = window._formSections
+    .map((sec) => ({ ...sec, items: sec.items.filter((it) => it.name) }))
+    .filter((sec) => sec.items.length || sec.carName);
+  if (!sections.some((sec) => sec.items.length)) { toast('Add at least one service or item'); return; }
   const data = {
     clientId: document.getElementById('fi_client').value,
     dateIssued: document.getElementById('fi_date').value || todayISO(),
     dueDate: document.getElementById('fi_due').value,
-    items,
+    sections,
     taxRate: document.getElementById('fi_tax').value,
     discountType: document.getElementById('fi_discType').value,
     discountValue: document.getElementById('fi_disc').value,
@@ -1571,10 +1750,21 @@ function settingsHTML() {
       </div>
       <div class="field"><label>Fallback logo text (used if no image)</label><input id="s_logo" value="${esc(s.logo)}" maxlength="4" onchange="setSetting('logo',this.value)"></div>
       <div class="field-2">
-        <div class="field"><label>Phone</label><input id="s_phone" value="${esc(s.phone)}" onchange="setSetting('phone',this.value)"></div>
+        <div class="field"><label>Phone(s)</label><input id="s_phone" value="${esc(s.phone)}" placeholder="08105952108 | 08059604694" onchange="setSetting('phone',this.value)"></div>
         <div class="field"><label>Email</label><input id="s_email" value="${esc(s.email)}" onchange="setSetting('email',this.value)"></div>
       </div>
-      <div class="field"><label>Address (shown on invoices)</label><input id="s_address" value="${esc(s.address)}" onchange="setSetting('address',this.value)"></div>
+      <div class="field-2">
+        <div class="field"><label>Address (shown on invoices)</label><input id="s_address" value="${esc(s.address)}" onchange="setSetting('address',this.value)"></div>
+        <div class="field"><label>Instagram handle</label><input value="${esc(s.instagram)}" placeholder="fatoma_autocare" onchange="setSetting('instagram',this.value)"></div>
+      </div>
+      <div class="field"><label>Invoice footer picture (the constant image at the bottom of every invoice)</label>
+        ${s.footerImg ? `<img src="${esc(s.footerImg)}" alt="" style="width:100%;border-radius:8px;border:1px solid var(--line);margin-bottom:8px">` : ''}
+        <div class="row">
+          <button class="btn small ghost" onclick="document.getElementById('footerImgFile').click()">${s.footerImg ? 'Change picture' : '📷 Upload picture'}</button>
+          ${s.footerImg ? `<button class="btn small danger" onclick="setSetting('footerImg','');render()">Remove</button>` : ''}
+        </div>
+        <input type="file" id="footerImgFile" accept="image/*" style="display:none" onchange="uploadFooterImg(this)">
+      </div>
     </div>
 
     <h2 class="section">Packages, services & products</h2>
@@ -1668,7 +1858,9 @@ function settingsHTML() {
     <h2 class="section">Connectivity</h2>
     <div class="card">
       <label class="checkline"><input type="checkbox" ${getOfflineMode() ? 'checked' : ''} onchange="setOfflineMode(this.checked)">
-        <span class="grow">Offline mode<div class="muted small">On: the app runs entirely from this phone and never touches the internet. Turn off only when you want to update the app, then close and reopen it.</div></span></label>
+        <span class="grow">Offline mode<div class="muted small">On: the app runs entirely from this phone and never touches the internet. To update the app: turn this off, then tap Restart below.</div></span></label>
+      <div class="btnrow"><button class="btn ghost block" onclick="restartApp()">⟳ Restart app</button></div>
+      <div class="muted small" style="margin-top:6px">Restarts in place — no need to close the app. With Offline mode off, it also checks for a new version.</div>
     </div>
 
     <h2 class="section">Data</h2>
@@ -1769,6 +1961,27 @@ function saveSigCanvas() {
   closeModal();
   render();
   toast('Signature saved');
+}
+
+function uploadFooterImg(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, 1000 / img.width);
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * scale);
+      c.height = Math.round(img.height * scale);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      setSetting('footerImg', c.toDataURL('image/jpeg', 0.82));
+      render();
+    };
+    img.src = reader.result;
+  };
+  reader.readAsDataURL(file);
+  input.value = '';
 }
 
 function uploadLogo(input) {
@@ -1906,10 +2119,7 @@ function importData(input) {
       db = data;
       db.settings = { ...freshState().settings, ...db.settings };
       db.services.forEach((s) => { if (!s.type) s.type = 'service'; });
-      db.invoices.forEach((i) => {
-        if (i.discountType === undefined) { i.discountType = 'amount'; i.discountValue = Number(i.discount) || 0; }
-        if (i.amountPaid === undefined) i.amountPaid = i.status === 'paid' ? invoiceTotal(i) : 0;
-      });
+      db.invoices.forEach(migrateInvoice);
       save();
       render();
       toast('Backup restored ✓');
@@ -1957,6 +2167,24 @@ function sendOfflineModeToSW(on) {
   if (navigator.serviceWorker && navigator.serviceWorker.controller) {
     navigator.serviceWorker.controller.postMessage({ type: 'SET_OFFLINE_MODE', value: on });
   }
+}
+
+// Reload without leaving the app (standalone PWAs have no refresh button).
+// When online, also ask the service worker to fetch any newer version first,
+// so one restart is enough to pick up an update.
+async function restartApp() {
+  toast('Restarting…');
+  try {
+    if (!getOfflineMode() && 'serviceWorker' in navigator) {
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (reg) {
+        await reg.update();
+        // give a freshly-found worker a moment to install and take over
+        if (reg.installing || reg.waiting) await new Promise((r) => setTimeout(r, 1500));
+      }
+    }
+  } catch (e) { /* offline or no SW — plain reload below */ }
+  location.reload();
 }
 
 // ---------------------------------------------------------------- quick add
