@@ -1,4 +1,4 @@
-const CACHE = 'detailer-v9';
+const CACHE = 'detailer-v10';
 
 // critical app files — cached immediately on install
 const ASSETS = [

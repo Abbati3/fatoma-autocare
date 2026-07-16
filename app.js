@@ -178,6 +178,13 @@ function initials(name) {
   return name.trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || '?';
 }
 
+// Nigerian local numbers (0801...) need the 234 country code for wa.me links
+function waLink(phone, text) {
+  let digits = (phone || '').replace(/\D/g, '');
+  if (digits.startsWith('0')) digits = '234' + digits.slice(1);
+  return `https://wa.me/${digits}` + (text ? `?text=${encodeURIComponent(text)}` : '');
+}
+
 function getClient(id) { return db.clients.find((c) => c.id === id); }
 function getService(id) { return db.services.find((s) => s.id === id); }
 function getJob(id) { return db.jobs.find((j) => j.id === id); }
@@ -496,8 +503,8 @@ function clientDetailHTML(id) {
       <hr class="divider">
       <div class="iconbtns">
         ${c.phone ? `<a href="tel:${esc(c.phone)}"><span class="ico">📞</span>Call</a>
-        <a href="sms:${esc(c.phone)}${due ? `?&body=${smsBody}` : ''}"><span class="ico">💬</span>Text</a>` : ''}
-        ${c.email ? `<a href="mailto:${esc(c.email)}"><span class="ico">✉️</span>Email</a>` : ''}
+        <a href="sms:${esc(c.phone)}${due ? `?&body=${smsBody}` : ''}"><span class="ico">💬</span>Text</a>
+        <a href="${waLink(c.phone, due ? decodeURIComponent(smsBody) : '')}" target="_blank" rel="noopener"><span class="ico">🟢</span>WhatsApp</a>` : ''}
         <button onclick="openClientForm('${c.id}')"><span class="ico">✏️</span>Edit</button>
       </div>
       ${c.address ? `<hr class="divider"><div class="muted">📍 ${esc(c.address)}</div>` : ''}
@@ -1029,68 +1036,9 @@ function invoiceDetailHTML(id) {
 
   const sections = inv.sections || [];
 
-  // On-screen (phone) view: plain cards like the rest of the app, so nothing
-  // is squeezed sideways. The navy/gold document below is print/PDF-only —
-  // window.print() renders it because it's still in the DOM, just hidden on screen.
-  const screenView = `
-    <div class="card">
-      <div class="row">
-        <div class="grow">
-          <b style="font-size:17px">${esc(inv.number)}</b>
-          <div class="muted">${fmtDate(inv.dateIssued)}${inv.dueDate ? ' · due ' + fmtDate(inv.dueDate) : ''}</div>
-          <div class="muted small">${esc(c?.name || inv.billTo || '—')}</div>
-        </div>
-        ${statusPill(inv)}
-      </div>
-    </div>
-
-    ${sections.map((sec, i) => {
-      const before = sectionSubtotal(sec);
-      const secDisc = Number(sec.discount) || 0;
-      const after = Math.max(0, before - secDisc);
-      return `
-      <div class="card">
-        <div class="row" style="margin-bottom:8px">
-          ${sec.img ? `<img src="${esc(sec.img)}" alt="" style="width:56px;height:40px;object-fit:cover;border-radius:8px;flex-shrink:0;border:1px solid var(--line)">` : ''}
-          <div class="grow">
-            <b>${esc(sec.carName || 'Vehicle ' + (i + 1))}</b>
-            ${sec.label ? `<div class="muted small" style="color:var(--accent);font-weight:600">${esc(sec.label)}</div>` : ''}
-          </div>
-          <div class="amount">${money(after)}</div>
-        </div>
-        ${sec.items.map((it) => `
-          <div class="listline"><div class="grow small">${esc(it.name)}${(Number(it.qty) || 1) > 1 ? ' ×' + it.qty : ''}</div>
-          <div class="small">${money((Number(it.qty) || 1) * (Number(it.price) || 0))}</div></div>`).join('')}
-        ${secDisc ? `<div class="row" style="margin-top:4px"><div class="grow muted small">Discount</div><span class="small">−${money(secDisc)}</span></div>` : ''}
-      </div>`;
-    }).join('')}
-
-    <div class="card">
-      <div class="row"><div class="grow muted">Subtotal</div><span>${money(sub)}</span></div>
-      ${disc ? `<div class="row"><div class="grow muted">${discLabel}</div><span>−${money(disc)}</span></div>` : ''}
-      ${Number(inv.taxRate) ? `<div class="row"><div class="grow muted">Tax (${inv.taxRate}%)</div><span>${money(tax)}</span></div>` : ''}
-      ${Number(delivery) ? `<div class="row"><div class="grow muted">Delivery</div><span>${money(delivery)}</span></div>` : ''}
-      <hr class="divider">
-      <div class="row"><div class="grow"><b>Total</b></div><div class="amount" style="font-size:18px">${money(total)}</div></div>
-      ${st === 'part' ? `
-        <div class="row" style="margin-top:6px"><div class="grow muted">Paid</div><span>${money(inv.amountPaid)}</span></div>
-        <div class="row"><div class="grow"><b>Balance due</b></div><b style="color:var(--danger)">${money(balance)}</b></div>` : ''}
-      ${st === 'paid' ? `<div class="row" style="margin-top:6px"><div class="grow muted">Paid</div><span style="color:var(--ok)">✓ ${fmtDate(inv.paidDate)}</span></div>` : ''}
-    </div>
-
-    ${hasPayInfo ? `
-    <div class="card">
-      <div class="muted small" style="font-weight:700;letter-spacing:0.06em;margin-bottom:6px">PAYMENT DETAILS</div>
-      ${s.payNumber ? `<div class="row"><div class="grow muted small">Account number</div><b>${esc(s.payNumber)}</b></div>` : ''}
-      ${s.payBank ? `<div class="row"><div class="grow muted small">Method</div><b>${esc(s.payBank)}</b></div>` : ''}
-      ${s.payName ? `<div class="row"><div class="grow muted small">Account name</div><b>${esc(s.payName)}</b></div>` : ''}
-    </div>` : ''}
-    ${inv.notes ? `<div class="card muted small">${esc(inv.notes)}</div>` : ''}`;
-
   return `
     <button class="btn small ghost no-print" onclick="nav('invoices')">‹ Invoices</button>
-    <div class="no-print" style="margin-top:12px">${screenView}</div>
-    <div class="inv-paper inv3 print-only">
+    <div class="inv-paper inv3" style="margin-top:12px">
       <div class="inv3-head">
         ${s.logoImg ? `<img class="inv3-logoimg" src="${esc(s.logoImg)}" alt="">` : `<div class="inv2-logo">${esc(s.logo)}</div>`}
         <div class="inv3-biz">
@@ -1127,17 +1075,18 @@ function invoiceDetailHTML(id) {
           ${sections.map((sec, i) => {
             const before = sectionSubtotal(sec);
             const after = Math.max(0, before - (Number(sec.discount) || 0));
+            const hasVehicleInfo = sec.carName || sec.img || sec.label;
             return `<tr>
               <td>${i + 1}.</td>
-              <td class="inv3-car">
+              <td class="inv3-car" data-label="${hasVehicleInfo ? 'CAR DETAILS' : ''}">
                 ${sec.img ? `<img src="${esc(sec.img)}" alt="">` : ''}
                 ${sec.carName ? `<div class="inv3-carname">${esc(sec.carName)}</div>` : ''}
                 ${sec.label ? `<div class="inv3-carlabel">${esc(sec.label)}</div>` : ''}
               </td>
-              <td class="inv3-svcs"><ul>${sec.items.map((it) =>
+              <td class="inv3-svcs" data-label="ITEMS"><ul>${sec.items.map((it) =>
                 `<li>${esc(it.name)}${(Number(it.qty) || 1) > 1 ? ` ×${it.qty}` : ''}</li>`).join('')}</ul></td>
-              <td class="num">${cur} ${moneyBare(before)}</td>
-              <td class="num">${cur} ${moneyBare(after)}</td>
+              <td class="num" data-label="TOTAL (BEFORE DISCOUNT)">${cur} ${moneyBare(before)}</td>
+              <td class="num" data-label="TOTAL (AFTER DISCOUNT)">${cur} ${moneyBare(after)}</td>
             </tr>`;
           }).join('')}
         </tbody>
@@ -1709,7 +1658,7 @@ function renderSections() {
   host.innerHTML = window._formSections.map((sec, si) => `
     <div class="card" style="padding:12px">
       <div class="row" style="margin-bottom:8px">
-        <b class="grow">Vehicle ${si + 1}</b>
+        <b class="grow">Item ${si + 1}</b>
         ${window._formSections.length > 1 ? `<button class="btn small danger" onclick="removeSection(${si})">Remove</button>` : ''}
       </div>
       ${(client?.vehicles || []).length ? `
@@ -1746,7 +1695,7 @@ function renderSections() {
           ${catalogOptionsHTML()}
         </select>
       </div>
-      <div class="field" style="margin-top:10px;margin-bottom:0"><label>Discount for this vehicle (${esc(db.settings.currency)})</label>
+      <div class="field" style="margin-top:10px;margin-bottom:0"><label>Discount for this line (${esc(db.settings.currency)})</label>
         <input type="number" inputmode="decimal" value="${sec.discount || 0}" oninput="window._formSections[${si}].discount=this.value"></div>
     </div>`).join('');
 }

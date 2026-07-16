@@ -463,14 +463,9 @@ h2.section:first-child { margin-top: 4px; }
 .inv-totals .row { justify-content: space-between; padding: 4px 0; }
 .inv-totals .grand { font-size: 18px; font-weight: 700; border-top: 1px solid var(--line); margin-top: 6px; padding-top: 8px; }
 
-/* the navy invoice document only renders for Print / window.print() —
-   the phone screen shows plain cards instead so nothing is squeezed sideways */
-.print-only { display: none; }
-
 @media print {
   body { background: #fff; color: #111; }
   header.appbar, nav.tabbar, .fab, .no-print { display: none !important; }
-  .print-only { display: block; }
   main { padding: 0; max-width: none; }
   .inv-paper { border: none; box-shadow: none; background: #fff; color: #111; }
   .inv-table td { border-color: #ddd; color: #111; }
@@ -549,6 +544,44 @@ h2.section:first-child { margin-top: 4px; }
 @media print {
   .inv3-table th, .inv3-trow, .inv3-payhead, .inv3-tagbar { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .inv3-table td { color: #1c2b4a; }
+}
+
+/* on a phone screen the A4 document shrinks to fit: smaller type, boxes
+   wrap instead of overflowing, and the 5-column table becomes one card
+   per row (via the data-label attributes set when the row is built) */
+@media (max-width: 480px) {
+  .inv-paper.inv3 { padding: 12px; }
+  .inv3-logoimg { height: 48px; max-width: 100px; }
+  .inv3-biz { font-size: 10px; }
+  .inv3-biz b { font-size: 13px; }
+  .inv3-title { font-size: 22px; margin: 10px 0 12px; }
+  .inv3-meta { flex-wrap: wrap; }
+  .inv3-metabox { flex: 1 1 130px; padding: 7px 10px; }
+  .inv3-metabox b { font-size: 13px; }
+
+  .inv3-table { font-size: 11px; }
+  .inv3-table thead { display: none; }
+  .inv3-table, .inv3-table tbody, .inv3-table tr { display: block; width: 100%; }
+  .inv3-table tr {
+    margin-bottom: 10px; border: 1px solid #c6cede; border-radius: 8px;
+    overflow: hidden; display: flex; flex-wrap: wrap;
+  }
+  .inv3-table td {
+    display: block; border: none; border-top: 1px solid #eef1f6;
+    padding: 8px 10px; flex: 1 1 100%;
+  }
+  .inv3-table td:first-child { display: none; } /* bare S/N number — redundant once each row is its own card */
+  .inv3-table td:nth-child(2) { border-top: none; }
+  .inv3-table td.num { flex: 1 1 50%; text-align: left; }
+  .inv3-table td[data-label]:not([data-label=""])::before {
+    content: attr(data-label); display: block; font-size: 8px; font-weight: 800;
+    letter-spacing: 0.06em; color: #8a93ab; margin-bottom: 3px;
+  }
+  .inv3-car { text-align: left; }
+  .inv3-car img { margin: 0 0 6px; }
+
+  .inv3-trow { flex-wrap: wrap; }
+  .inv3-paybody { gap: 8px 16px; }
 }
 
 /* toast */
