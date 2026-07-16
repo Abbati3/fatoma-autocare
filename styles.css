@@ -410,6 +410,8 @@ h2.section:first-child { margin-top: 4px; }
   cursor: pointer;
 }
 .iconbtns .ico { font-size: 19px; }
+.ico-img { width: 19px; height: 19px; border-radius: 5px; display: block; }
+.brand-ico { width: 15px; height: 15px; border-radius: 4px; vertical-align: -3px; display: inline-block; margin-right: 4px; }
 
 /* ---------- invoice print view ---------- */
 

@@ -1,4 +1,4 @@
-const CACHE = 'detailer-v10';
+const CACHE = 'detailer-v11';
 
 // critical app files — cached immediately on install
 const ASSETS = [
@@ -9,7 +9,10 @@ const ASSETS = [
   './manifest.json',
   './logo.svg',
   './icon-180.png',
-  './icon-512.png'
+  './icon-512.png',
+  './icon-whatsapp.png',
+  './icon-instagram.png',
+  './icon-opay.png'
 ];
 
 // large PDF libs — cached on first successful fetch instead of at install,

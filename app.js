@@ -178,6 +178,10 @@ function initials(name) {
   return name.trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || '?';
 }
 
+function isOpay(bank) {
+  return /opay/i.test(bank || '');
+}
+
 // Nigerian local numbers (0801...) need the 234 country code for wa.me links
 function waLink(phone, text) {
   let digits = (phone || '').replace(/\D/g, '');
@@ -504,7 +508,7 @@ function clientDetailHTML(id) {
       <div class="iconbtns">
         ${c.phone ? `<a href="tel:${esc(c.phone)}"><span class="ico">📞</span>Call</a>
         <a href="sms:${esc(c.phone)}${due ? `?&body=${smsBody}` : ''}"><span class="ico">💬</span>Text</a>
-        <a href="${waLink(c.phone, due ? decodeURIComponent(smsBody) : '')}" target="_blank" rel="noopener"><span class="ico">🟢</span>WhatsApp</a>` : ''}
+        <a href="${waLink(c.phone, due ? decodeURIComponent(smsBody) : '')}" target="_blank" rel="noopener"><img class="ico-img" src="icon-whatsapp.png" alt="">WhatsApp</a>` : ''}
         <button onclick="openClientForm('${c.id}')"><span class="ico">✏️</span>Edit</button>
       </div>
       ${c.address ? `<hr class="divider"><div class="muted">📍 ${esc(c.address)}</div>` : ''}
@@ -1045,7 +1049,7 @@ function invoiceDetailHTML(id) {
           <b>${esc(s.bizName).toUpperCase()}</b>
           ${s.address ? `<div>📍 ${esc(s.address)}</div>` : ''}
           ${s.phone ? `<div>📞 ${esc(s.phone)}</div>` : ''}
-          ${s.instagram ? `<div>📷 ${esc(s.instagram)}</div>` : ''}
+          ${s.instagram ? `<div><img class="brand-ico" src="icon-instagram.png" alt="">${esc(s.instagram)}</div>` : ''}
           ${s.tagline ? `<div class="inv3-tag">…${esc(s.tagline)}</div>` : ''}
         </div>
       </div>
@@ -1110,7 +1114,7 @@ function invoiceDetailHTML(id) {
         <div class="inv3-payhead">PAYMENT DETAILS</div>
         <div class="inv3-paybody">
           ${s.payNumber ? `<div class="inv3-payitem"><span>ACCOUNT NUMBER:</span><b class="inv3-paynum">${esc(s.payNumber)}</b></div>` : ''}
-          ${s.payBank ? `<div class="inv3-payitem"><span>PAYMENT METHOD:</span><b>${esc(s.payBank)}</b></div>` : ''}
+          ${s.payBank ? `<div class="inv3-payitem"><span>PAYMENT METHOD:</span><b>${isOpay(s.payBank) ? `<img class="brand-ico" src="icon-opay.png" alt="">` : ''}${esc(s.payBank)}</b></div>` : ''}
           ${s.payName ? `<div class="inv3-payitem"><span>ACCOUNT NAME:</span><b>${esc(s.payName)}</b></div>` : ''}
         </div>
       </div>` : ''}
@@ -1287,6 +1291,23 @@ async function ensurePdfMake() {
 }
 
 // Rasterize the current logo (SVG file or uploaded image) to a PNG data URI for pdfmake.
+// Loads a bundled icon file (whatsapp/instagram/opay) as a data URI for pdfmake.
+function iconFileDataURI(filename) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const c = document.createElement('canvas');
+        c.width = img.width; c.height = img.height;
+        c.getContext('2d').drawImage(img, 0, 0);
+        resolve(c.toDataURL('image/png'));
+      } catch (e) { resolve(null); }
+    };
+    img.onerror = () => resolve(null);
+    img.src = filename;
+  });
+}
+
 function logoDataURI() {
   return new Promise((resolve) => {
     const src = db.settings.logoImg;
@@ -1316,9 +1337,11 @@ async function exportInvoicePDF(id) {
   toast('Preparing PDF…');
   try {
     await ensurePdfMake();
-    const logo = await logoDataURI();
-
     const s = db.settings;
+    const logo = await logoDataURI();
+    const igIcon = s.instagram ? await iconFileDataURI('icon-instagram.png') : null;
+    const opayIcon = isOpay(s.payBank) ? await iconFileDataURI('icon-opay.png') : null;
+
     const c = getClient(inv.clientId);
     const cur = s.currency;
     const NAVY = '#1c2b4a';
@@ -1383,6 +1406,8 @@ async function exportInvoicePDF(id) {
       images: {
         ...(logo ? { logoimg: logo } : {}),
         ...(s.signatureImg ? { sigimg: s.signatureImg } : {}),
+        ...(igIcon ? { igicon: igIcon } : {}),
+        ...(opayIcon ? { opayicon: opayIcon } : {}),
         ...(inv.sections || []).reduce((acc, sec, i) => { if (sec.img) acc['vimg' + i] = sec.img; return acc; }, {}),
       },
       styles: {
@@ -1400,7 +1425,13 @@ async function exportInvoicePDF(id) {
                 { text: s.bizName.toUpperCase(), fontSize: 13, bold: true, alignment: 'right' },
                 ...(s.address ? [{ text: s.address, fontSize: 8, color: GREY, alignment: 'right', margin: [0, 2, 0, 0] }] : []),
                 ...(s.phone ? [{ text: s.phone, fontSize: 8, color: GREY, alignment: 'right', margin: [0, 1, 0, 0] }] : []),
-                ...(s.instagram ? [{ text: s.instagram, fontSize: 8, color: GREY, alignment: 'right', margin: [0, 1, 0, 0] }] : []),
+                ...(s.instagram ? [{
+                  columns: [
+                    { width: '*', text: '' },
+                    ...(igIcon ? [{ width: 10, image: 'igicon', fit: [10, 10], margin: [0, 1, 0, 0] }] : []),
+                    { width: 'auto', text: s.instagram, fontSize: 8, color: GREY, margin: [igIcon ? 3 : 0, 1, 0, 0] },
+                  ],
+                }] : []),
                 ...(s.tagline ? [{ text: '…' + s.tagline, fontSize: 8, italics: true, color: GOLD, alignment: 'right', margin: [0, 2, 0, 0] }] : []),
               ],
             },
@@ -1480,7 +1511,12 @@ async function exportInvoicePDF(id) {
               [{
                 columns: [
                   ...(s.payNumber ? [{ stack: [{ text: 'ACCOUNT NUMBER:', fontSize: 6.5, bold: true, color: GREY }, { text: s.payNumber, fontSize: 14, bold: true, margin: [0, 2, 0, 0] }] }] : []),
-                  ...(s.payBank ? [{ stack: [{ text: 'PAYMENT METHOD:', fontSize: 6.5, bold: true, color: GREY }, { text: s.payBank, fontSize: 11, bold: true, margin: [0, 3, 0, 0] }] }] : []),
+                  ...(s.payBank ? [{ stack: [
+                      { text: 'PAYMENT METHOD:', fontSize: 6.5, bold: true, color: GREY },
+                      opayIcon
+                        ? { columns: [{ width: 12, image: 'opayicon', fit: [12, 12] }, { width: 'auto', text: s.payBank, fontSize: 11, bold: true, margin: [3, 1, 0, 0] }], margin: [0, 3, 0, 0] }
+                        : { text: s.payBank, fontSize: 11, bold: true, margin: [0, 3, 0, 0] },
+                    ] }] : []),
                   ...(s.payName ? [{ stack: [{ text: 'ACCOUNT NAME:', fontSize: 6.5, bold: true, color: GREY }, { text: s.payName, fontSize: 9, bold: true, margin: [0, 4, 0, 0] }] }] : []),
                 ],
                 columnGap: 12,
@@ -1803,7 +1839,7 @@ function settingsHTML() {
       </div>
       <div class="field-2">
         <div class="field"><label>Address (shown on invoices)</label><input id="s_address" value="${esc(s.address)}" onchange="setSetting('address',this.value)"></div>
-        <div class="field"><label>Instagram handle</label><input value="${esc(s.instagram)}" placeholder="fatoma_autocare" onchange="setSetting('instagram',this.value)"></div>
+        <div class="field"><label><img class="brand-ico" src="icon-instagram.png" alt="">Instagram handle</label><input value="${esc(s.instagram)}" placeholder="fatoma_autocare" onchange="setSetting('instagram',this.value)"></div>
       </div>
     </div>
 
@@ -1856,7 +1892,7 @@ function settingsHTML() {
       <div class="field"><label>Account name</label><input value="${esc(s.payName)}" onchange="setSetting('payName',this.value)"></div>
       <div class="field-2">
         <div class="field"><label>Account number</label><input value="${esc(s.payNumber)}" onchange="setSetting('payNumber',this.value)"></div>
-        <div class="field"><label>Bank / wallet</label><input value="${esc(s.payBank)}" onchange="setSetting('payBank',this.value)"></div>
+        <div class="field"><label>${isOpay(s.payBank) ? `<img class="brand-ico" src="icon-opay.png" alt="">` : ''}Bank / wallet</label><input value="${esc(s.payBank)}" placeholder="OPay" onchange="setSetting('payBank',this.value);render()"></div>
       </div>
     </div>
 
