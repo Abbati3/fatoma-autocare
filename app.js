@@ -47,7 +47,6 @@ function freshState() {
       payNumber: '8059604694',
       payBank: 'OPay',
       instagram: 'fatoma_autocare',
-      footerImg: '',
       signatureName: 'Mohammed Ali Bukar Fatoma',
       signatureImg: '',
       accent: '#c8102e',
@@ -68,6 +67,7 @@ try {
 }
 // merge any new settings keys into older saved data
 db.settings = { ...freshState().settings, ...db.settings };
+delete db.settings.footerImg; // dropped feature — clear any stale stored image
 // older data: catalog items default to plain services
 db.services.forEach((s) => { if (!s.type) s.type = 'service'; });
 // older invoices: flat items → vehicle sections, typed discount, payment tracking
@@ -85,6 +85,14 @@ function migrateInvoice(i) {
   }
 }
 db.invoices.forEach(migrateInvoice);
+// older jobs: single vehicleId/serviceIds/customItems/priceOverride → a vehicles[] array
+function migrateJob(j) {
+  if (!j.vehicles) {
+    j.vehicles = [{ id: uid(), vehicleId: j.vehicleId || '', serviceIds: j.serviceIds || [], customItems: j.customItems || [], priceOverride: j.priceOverride ?? '' }];
+    delete j.vehicleId; delete j.serviceIds; delete j.customItems; delete j.priceOverride;
+  }
+}
+db.jobs.forEach(migrateJob);
 
 function save() {
   localStorage.setItem(STORE_KEY, JSON.stringify(db));
@@ -182,14 +190,18 @@ function vehicleLabel(client, vid) {
   return [v.year, v.make, v.model].filter(Boolean).join(' ') + (v.color ? ` (${v.color})` : '');
 }
 
-function jobTotal(job) {
+function jobVehicleTotal(jv) {
   let t = 0;
-  (job.serviceIds || []).forEach((sid) => { t += Number(getService(sid)?.price) || 0; });
-  (job.customItems || []).forEach((it) => { t += Number(it.price) || 0; });
-  if (job.priceOverride !== '' && job.priceOverride != null && !isNaN(job.priceOverride)) {
-    t = Number(job.priceOverride);
+  (jv.serviceIds || []).forEach((sid) => { t += Number(getService(sid)?.price) || 0; });
+  (jv.customItems || []).forEach((it) => { t += Number(it.price) || 0; });
+  if (jv.priceOverride !== '' && jv.priceOverride != null && !isNaN(jv.priceOverride)) {
+    t = Number(jv.priceOverride);
   }
   return t;
+}
+
+function jobTotal(job) {
+  return (job.vehicles || []).reduce((t, jv) => t + jobVehicleTotal(jv), 0);
 }
 
 function sectionSubtotal(sec) {
@@ -669,15 +681,18 @@ const JOB_STATUS = {
 function jobCardHTML(j, withDate) {
   const c = getClient(j.clientId);
   const st = JOB_STATUS[j.status] || JOB_STATUS.scheduled;
-  const services = (j.serviceIds || []).map((sid) => getService(sid)?.name).filter(Boolean)
-    .concat((j.customItems || []).map((it) => it.name));
+  const vehicles = j.vehicles || [];
+  const carNames = vehicles.map((jv) => vehicleLabel(c, jv.vehicleId)).filter(Boolean);
+  const allServices = vehicles.flatMap((jv) =>
+    (jv.serviceIds || []).map((sid) => getService(sid)?.name).filter(Boolean).concat((jv.customItems || []).map((it) => it.name)));
+  const summaryLine = carNames.length ? carNames.join(', ') : (allServices.join(', ') || 'No services listed');
   return `
     <div class="card tappable" onclick="openDetail('job','${j.id}')">
       <div class="row">
         <div class="grow">
           <div class="nowrap"><b>${esc(c?.name || 'Unknown client')}</b></div>
-          <div class="muted nowrap">${esc(services.join(', ') || 'No services listed')}</div>
-          <div class="muted small">${withDate ? fmtDateShort(j.date) + (j.time ? ' · ' : '') : ''}${fmtTime(j.time)}${j.vehicleId ? ' · ' + esc(vehicleLabel(c, j.vehicleId)) : ''}</div>
+          <div class="muted nowrap">${esc(summaryLine)}</div>
+          <div class="muted small">${withDate ? fmtDateShort(j.date) + (j.time ? ' · ' : '') : ''}${fmtTime(j.time)}${vehicles.length > 1 ? ' · ' + vehicles.length + ' vehicles' : ''}</div>
         </div>
         <div style="text-align:right">
           <div class="amount">${money(jobTotal(j))}</div>
@@ -720,15 +735,27 @@ function jobDetailHTML(id) {
   const c = getClient(j.clientId);
   const st = JOB_STATUS[j.status] || JOB_STATUS.scheduled;
   const inv = j.invoiceId ? getInvoice(j.invoiceId) : null;
+  const vehicles = j.vehicles || [];
 
-  let lines = '';
-  (j.serviceIds || []).forEach((sid) => {
-    const s = getService(sid);
-    if (s) lines += `<div class="listline"><div class="grow">${esc(s.name)}</div><div class="amount">${money(s.price)}</div></div>`;
-  });
-  (j.customItems || []).forEach((it) => {
-    lines += `<div class="listline"><div class="grow">${esc(it.name)}</div><div class="amount">${money(it.price)}</div></div>`;
-  });
+  const vehBlocks = vehicles.map((jv, i) => {
+    let lines = '';
+    (jv.serviceIds || []).forEach((sid) => {
+      const s = getService(sid);
+      if (s) lines += `<div class="listline"><div class="grow">${esc(s.name)}</div><div class="amount">${money(s.price)}</div></div>`;
+    });
+    (jv.customItems || []).forEach((it) => {
+      lines += `<div class="listline"><div class="grow">${esc(it.name)}</div><div class="amount">${money(it.price)}</div></div>`;
+    });
+    const label = vehicleLabel(c, jv.vehicleId);
+    return `
+      <div class="card">
+        ${vehicles.length > 1
+          ? `<b>🚙 ${esc(label || 'Vehicle ' + (i + 1))}</b><hr class="divider">`
+          : (label ? `<div class="muted small">🚙 ${esc(label)}</div><hr class="divider">` : '')}
+        ${lines || '<div class="muted">No services listed.</div>'}
+        ${vehicles.length > 1 ? `<div class="row" style="margin-top:8px"><div class="grow muted small">Subtotal</div><b>${money(jobVehicleTotal(jv))}</b></div>` : ''}
+      </div>`;
+  }).join('');
 
   return `
     <button class="btn small ghost" onclick="nav('jobs')">‹ Jobs</button>
@@ -737,13 +764,15 @@ function jobDetailHTML(id) {
         <div class="grow">
           <b style="font-size:17px">${esc(c?.name || 'Unknown client')}</b>
           <div class="muted">${fmtDateShort(j.date)}${j.time ? ' · ' + fmtTime(j.time) : ''}</div>
-          ${j.vehicleId ? `<div class="muted small">🚙 ${esc(vehicleLabel(c, j.vehicleId))}</div>` : ''}
         </div>
         <span class="pill ${st.cls}">${st.label}</span>
       </div>
-      <hr class="divider">
-      ${lines || '<div class="muted">No services listed.</div>'}
-      <div class="row" style="margin-top:10px"><div class="grow"><b>Total</b></div><div class="amount" style="font-size:18px">${money(jobTotal(j))}</div></div>
+    </div>
+
+    ${vehBlocks}
+
+    <div class="card">
+      <div class="row"><div class="grow"><b>Total</b></div><div class="amount" style="font-size:18px">${money(jobTotal(j))}</div></div>
       ${j.notes ? `<hr class="divider"><div class="muted">📝 ${esc(j.notes)}</div>` : ''}
     </div>
 
@@ -788,90 +817,121 @@ function deleteJob(id) {
 function openJobForm(id, presetClientId) {
   if (!db.clients.length) { toast('Add a client first'); openClientForm(); return; }
   const j = id ? getJob(id) : null;
-  window._formCustomItems = j ? JSON.parse(JSON.stringify(j.customItems || [])) : [];
+  window._formJobVehicles = j
+    ? JSON.parse(JSON.stringify(j.vehicles || []))
+    : [{ vehicleId: '', serviceIds: [], customItems: [], priceOverride: '' }];
   const selClient = j?.clientId || presetClientId || db.clients[0].id;
 
   const body = `
     <div class="field"><label>Client *</label>
-      <select id="f_client" onchange="refreshVehicleSelect()">${db.clients.slice().sort((a, b) => a.name.localeCompare(b.name)).map((c) =>
+      <select id="f_client" onchange="renderJobVehicles()">${db.clients.slice().sort((a, b) => a.name.localeCompare(b.name)).map((c) =>
         `<option value="${c.id}" ${c.id === selClient ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
-    <div class="field"><label>Vehicle</label><select id="f_vehicle"></select></div>
     <div class="field-2">
       <div class="field"><label>Date *</label><input id="f_date" type="date" value="${j?.date || todayISO()}"></div>
       <div class="field"><label>Time</label><input id="f_time" type="time" value="${j?.time || ''}"></div>
     </div>
-    ${catalogChecklistHTML(j)}
-    <div id="customItems"></div>
-    <button class="btn small ghost" onclick="addCustomItemRow()">＋ Custom line item</button>
-    <div class="field" style="margin-top:12px"><label>Price override — leave blank to use the sum of services</label>
-      <input id="f_override" type="number" inputmode="decimal" value="${j?.priceOverride ?? ''}" placeholder="Auto"></div>
-    <div class="field"><label>Notes</label><textarea id="f_jnotes" placeholder="Special requests…">${esc(j?.notes || '')}</textarea></div>
+    <h2 class="section">Vehicles</h2>
+    <div id="jobVehiclesHost"></div>
+    <button class="btn small ghost" onclick="addJobVehicle()">＋ Add another vehicle</button>
+    <div class="field" style="margin-top:14px"><label>Notes</label><textarea id="f_jnotes" placeholder="Special requests…">${esc(j?.notes || '')}</textarea></div>
     <div class="btnrow"><button class="btn block" onclick="saveJob('${id || ''}')">Save job</button></div>`;
 
-  openModal(id ? 'Edit job' : 'New job', body, () => {
-    refreshVehicleSelect(j?.vehicleId);
-    renderCustomItemRows();
-  });
+  openModal(id ? 'Edit job' : 'New job', body, () => renderJobVehicles());
 }
 
-function catalogChecklistHTML(j) {
-  return CATALOG_TYPES.map(([type, label]) => {
+function renderJobVehicles() {
+  const host = document.getElementById('jobVehiclesHost');
+  if (!host) return;
+  const client = getClient(document.getElementById('f_client').value);
+  const clientVehicles = client?.vehicles || [];
+  host.innerHTML = window._formJobVehicles.map((jv, vi) => jobVehicleBlockHTML(jv, vi, clientVehicles)).join('');
+  window._formJobVehicles.forEach((_, vi) => renderJobCustomItems(vi));
+}
+
+function jobVehicleBlockHTML(jv, vi, clientVehicles) {
+  // auto-pick the client's only vehicle so single-car jobs need no extra tap
+  if (!jv.vehicleId && clientVehicles.length === 1) jv.vehicleId = clientVehicles[0].id;
+  const catalog = CATALOG_TYPES.map(([type, label]) => {
     const items = db.services.filter((s) => s.active && (s.type || 'service') === type);
     if (!items.length) return '';
-    return `<h2 class="section">${label}</h2>
-      <div class="card" style="padding:4px 14px">
-        ${items.map((s) => `
-          <label class="checkline"><input type="checkbox" class="svc" value="${s.id}" ${j?.serviceIds?.includes(s.id) ? 'checked' : ''}>
-          <span class="grow">${esc(s.name)}${s.desc ? `<div class="muted small">${esc(s.desc)}</div>` : ''}</span><b>${money(s.price)}</b></label>`).join('')}
-      </div>`;
+    return `<div class="muted small" style="text-transform:uppercase;letter-spacing:0.05em;font-weight:600;margin:10px 0 2px">${label}</div>
+      ${items.map((s) => `
+        <label class="checkline"><input type="checkbox" ${jv.serviceIds?.includes(s.id) ? 'checked' : ''}
+          onchange="toggleJobService(${vi},'${s.id}',this.checked)">
+        <span class="grow">${esc(s.name)}</span><b>${money(s.price)}</b></label>`).join('')}`;
   }).join('');
+  return `
+    <div class="card" style="padding:12px">
+      <div class="row" style="margin-bottom:8px">
+        <b class="grow">Vehicle ${vi + 1}</b>
+        ${window._formJobVehicles.length > 1 ? `<button class="btn small danger" onclick="removeJobVehicle(${vi})">Remove</button>` : ''}
+      </div>
+      ${clientVehicles.length ? `<div class="field"><label>Vehicle</label>
+        <select onchange="window._formJobVehicles[${vi}].vehicleId=this.value">
+          <option value="">— none —</option>
+          ${clientVehicles.map((v) => `<option value="${v.id}" ${jv.vehicleId === v.id ? 'selected' : ''}>${esc([v.year, v.make, v.model].filter(Boolean).join(' '))}</option>`).join('')}
+        </select></div>` : '<div class="muted small">This client has no saved vehicles yet.</div>'}
+      ${catalog}
+      <div id="jvCustom${vi}" style="margin-top:8px"></div>
+      <button class="btn small ghost" onclick="addJobCustomItem(${vi})">＋ Custom line item</button>
+      <div class="field" style="margin-top:10px;margin-bottom:0"><label>Price override for this vehicle — leave blank to use the sum above</label>
+        <input type="number" inputmode="decimal" value="${jv.priceOverride ?? ''}" placeholder="Auto" oninput="window._formJobVehicles[${vi}].priceOverride=this.value"></div>
+    </div>`;
 }
 
-function refreshVehicleSelect(selectedId) {
-  const cid = document.getElementById('f_client').value;
-  const c = getClient(cid);
-  const sel = document.getElementById('f_vehicle');
-  const vehicles = c?.vehicles || [];
-  sel.innerHTML = `<option value="">— none —</option>` + vehicles.map((v) =>
-    `<option value="${v.id}" ${v.id === selectedId ? 'selected' : ''}>${esc([v.year, v.make, v.model].filter(Boolean).join(' '))}</option>`).join('');
-  if (!selectedId && vehicles.length === 1) sel.value = vehicles[0].id;
+function toggleJobService(vi, sid, checked) {
+  const jv = window._formJobVehicles[vi];
+  jv.serviceIds = jv.serviceIds || [];
+  if (checked) { if (!jv.serviceIds.includes(sid)) jv.serviceIds.push(sid); }
+  else { jv.serviceIds = jv.serviceIds.filter((x) => x !== sid); }
 }
 
-function renderCustomItemRows() {
-  const host = document.getElementById('customItems');
+function renderJobCustomItems(vi) {
+  const host = document.getElementById('jvCustom' + vi);
   if (!host) return;
-  host.innerHTML = window._formCustomItems.map((it, i) => `
+  const items = window._formJobVehicles[vi].customItems || [];
+  host.innerHTML = items.map((it, ii) => `
     <div class="field-2" style="align-items:end">
-      <div class="field"><label>Item</label><input data-ci="${i}" data-ck="name" value="${esc(it.name)}" placeholder="Odor removal"></div>
-      <div class="field"><label>Price <button class="btn small danger" style="float:right;padding:0 6px" onclick="removeCustomItemRow(${i})">✕</button></label>
-        <input data-ci="${i}" data-ck="price" type="number" inputmode="decimal" value="${it.price}"></div>
+      <div class="field"><label>Item</label><input value="${esc(it.name)}" placeholder="Odor removal"
+        oninput="window._formJobVehicles[${vi}].customItems[${ii}].name=this.value"></div>
+      <div class="field"><label>Price <button class="btn small danger" style="float:right;padding:0 6px" onclick="removeJobCustomItem(${vi},${ii})">✕</button></label>
+        <input type="number" inputmode="decimal" value="${it.price}" oninput="window._formJobVehicles[${vi}].customItems[${ii}].price=this.value"></div>
     </div>`).join('');
-  host.querySelectorAll('input[data-ci]').forEach((inp) => {
-    inp.oninput = () => { window._formCustomItems[Number(inp.dataset.ci)][inp.dataset.ck] = inp.value; };
-  });
 }
 
-function addCustomItemRow() {
-  window._formCustomItems.push({ name: '', price: '' });
-  renderCustomItemRows();
+function addJobVehicle() {
+  window._formJobVehicles.push({ vehicleId: '', serviceIds: [], customItems: [], priceOverride: '' });
+  renderJobVehicles();
 }
 
-function removeCustomItemRow(i) {
-  window._formCustomItems.splice(i, 1);
-  renderCustomItemRows();
+function removeJobVehicle(vi) {
+  window._formJobVehicles.splice(vi, 1);
+  renderJobVehicles();
+}
+
+function addJobCustomItem(vi) {
+  window._formJobVehicles[vi].customItems = window._formJobVehicles[vi].customItems || [];
+  window._formJobVehicles[vi].customItems.push({ name: '', price: '' });
+  renderJobCustomItems(vi);
+}
+
+function removeJobCustomItem(vi, ii) {
+  window._formJobVehicles[vi].customItems.splice(ii, 1);
+  renderJobCustomItems(vi);
 }
 
 function saveJob(id) {
   const date = document.getElementById('f_date').value;
   if (!date) { toast('Date is required'); return; }
+  const vehicles = window._formJobVehicles.filter((jv) =>
+    (jv.serviceIds && jv.serviceIds.length) || (jv.customItems && jv.customItems.some((it) => it.name)));
+  if (!vehicles.length) { toast('Add at least one service'); return; }
+  vehicles.forEach((jv) => { jv.customItems = (jv.customItems || []).filter((it) => it.name); });
   const data = {
     clientId: document.getElementById('f_client').value,
-    vehicleId: document.getElementById('f_vehicle').value,
     date,
     time: document.getElementById('f_time').value,
-    serviceIds: [...document.querySelectorAll('.svc:checked')].map((x) => x.value),
-    customItems: window._formCustomItems.filter((it) => it.name),
-    priceOverride: document.getElementById('f_override').value,
+    vehicles,
     notes: document.getElementById('f_jnotes').value.trim(),
   };
   if (id) {
@@ -968,9 +1028,69 @@ function invoiceDetailHTML(id) {
   const discLabel = inv.discountType === 'percent' ? `DISCOUNT (${Number(inv.discountValue) || 0}%)` : 'DISCOUNT';
 
   const sections = inv.sections || [];
+
+  // On-screen (phone) view: plain cards like the rest of the app, so nothing
+  // is squeezed sideways. The navy/gold document below is print/PDF-only —
+  // window.print() renders it because it's still in the DOM, just hidden on screen.
+  const screenView = `
+    <div class="card">
+      <div class="row">
+        <div class="grow">
+          <b style="font-size:17px">${esc(inv.number)}</b>
+          <div class="muted">${fmtDate(inv.dateIssued)}${inv.dueDate ? ' · due ' + fmtDate(inv.dueDate) : ''}</div>
+          <div class="muted small">${esc(c?.name || inv.billTo || '—')}</div>
+        </div>
+        ${statusPill(inv)}
+      </div>
+    </div>
+
+    ${sections.map((sec, i) => {
+      const before = sectionSubtotal(sec);
+      const secDisc = Number(sec.discount) || 0;
+      const after = Math.max(0, before - secDisc);
+      return `
+      <div class="card">
+        <div class="row" style="margin-bottom:8px">
+          ${sec.img ? `<img src="${esc(sec.img)}" alt="" style="width:56px;height:40px;object-fit:cover;border-radius:8px;flex-shrink:0;border:1px solid var(--line)">` : ''}
+          <div class="grow">
+            <b>${esc(sec.carName || 'Vehicle ' + (i + 1))}</b>
+            ${sec.label ? `<div class="muted small" style="color:var(--accent);font-weight:600">${esc(sec.label)}</div>` : ''}
+          </div>
+          <div class="amount">${money(after)}</div>
+        </div>
+        ${sec.items.map((it) => `
+          <div class="listline"><div class="grow small">${esc(it.name)}${(Number(it.qty) || 1) > 1 ? ' ×' + it.qty : ''}</div>
+          <div class="small">${money((Number(it.qty) || 1) * (Number(it.price) || 0))}</div></div>`).join('')}
+        ${secDisc ? `<div class="row" style="margin-top:4px"><div class="grow muted small">Discount</div><span class="small">−${money(secDisc)}</span></div>` : ''}
+      </div>`;
+    }).join('')}
+
+    <div class="card">
+      <div class="row"><div class="grow muted">Subtotal</div><span>${money(sub)}</span></div>
+      ${disc ? `<div class="row"><div class="grow muted">${discLabel}</div><span>−${money(disc)}</span></div>` : ''}
+      ${Number(inv.taxRate) ? `<div class="row"><div class="grow muted">Tax (${inv.taxRate}%)</div><span>${money(tax)}</span></div>` : ''}
+      ${Number(delivery) ? `<div class="row"><div class="grow muted">Delivery</div><span>${money(delivery)}</span></div>` : ''}
+      <hr class="divider">
+      <div class="row"><div class="grow"><b>Total</b></div><div class="amount" style="font-size:18px">${money(total)}</div></div>
+      ${st === 'part' ? `
+        <div class="row" style="margin-top:6px"><div class="grow muted">Paid</div><span>${money(inv.amountPaid)}</span></div>
+        <div class="row"><div class="grow"><b>Balance due</b></div><b style="color:var(--danger)">${money(balance)}</b></div>` : ''}
+      ${st === 'paid' ? `<div class="row" style="margin-top:6px"><div class="grow muted">Paid</div><span style="color:var(--ok)">✓ ${fmtDate(inv.paidDate)}</span></div>` : ''}
+    </div>
+
+    ${hasPayInfo ? `
+    <div class="card">
+      <div class="muted small" style="font-weight:700;letter-spacing:0.06em;margin-bottom:6px">PAYMENT DETAILS</div>
+      ${s.payNumber ? `<div class="row"><div class="grow muted small">Account number</div><b>${esc(s.payNumber)}</b></div>` : ''}
+      ${s.payBank ? `<div class="row"><div class="grow muted small">Method</div><b>${esc(s.payBank)}</b></div>` : ''}
+      ${s.payName ? `<div class="row"><div class="grow muted small">Account name</div><b>${esc(s.payName)}</b></div>` : ''}
+    </div>` : ''}
+    ${inv.notes ? `<div class="card muted small">${esc(inv.notes)}</div>` : ''}`;
+
   return `
     <button class="btn small ghost no-print" onclick="nav('invoices')">‹ Invoices</button>
-    <div class="inv-paper inv3" style="margin-top:12px">
+    <div class="no-print" style="margin-top:12px">${screenView}</div>
+    <div class="inv-paper inv3 print-only">
       <div class="inv3-head">
         ${s.logoImg ? `<img class="inv3-logoimg" src="${esc(s.logoImg)}" alt="">` : `<div class="inv2-logo">${esc(s.logo)}</div>`}
         <div class="inv3-biz">
@@ -1061,7 +1181,6 @@ function invoiceDetailHTML(id) {
         <div class="inv3-sigsub">Authorized signature</div>
       </div>` : ''}
 
-      ${s.footerImg ? `<img class="inv3-footerimg" src="${esc(s.footerImg)}" alt="">` : ''}
       ${s.bottomTagline ? `<div class="inv3-tagbar">${esc(s.bottomTagline)}</div>` : ''}
     </div>
 
@@ -1306,35 +1425,15 @@ async function exportInvoicePDF(id) {
 
     const navyBox = { hLineWidth: () => 1.2, vLineWidth: () => 1.2, hLineColor: () => NAVY, vLineColor: () => NAVY };
 
-    // the constant footer picture is anchored to the page bottom (like the
-    // printed template), so measure it and reserve bottom-margin space for it
-    let foot = null;
-    if (s.footerImg) {
-      foot = await new Promise((resolve) => {
-        const im = new Image();
-        im.onload = () => {
-          // banners get the full page width; photo-shaped images keep their
-          // aspect and are capped in height so they never distort or dominate
-          const ratio = im.height / im.width;
-          let w = 595.28, h = w * ratio;
-          if (h > 140) { h = 140; w = h / ratio; }
-          resolve({ src: s.footerImg, w, h });
-        };
-        im.onerror = () => resolve(null);
-        im.src = s.footerImg;
-      });
-    }
-
     const dd = {
       pageSize: 'A4',
-      pageMargins: [46, 36, 46, (foot ? foot.h : 0) + 34],
+      pageMargins: [46, 36, 46, 34],
       defaultStyle: { font: 'Roboto', fontSize: 10, color: NAVY },
       // register every picture by name — data URIs inside the dynamic footer
       // function get mis-resolved by pdfmake otherwise
       images: {
         ...(logo ? { logoimg: logo } : {}),
         ...(s.signatureImg ? { sigimg: s.signatureImg } : {}),
-        ...(foot ? { footimg: foot.src } : {}),
         ...(inv.sections || []).reduce((acc, sec, i) => { if (sec.img) acc['vimg' + i] = sec.img; return acc; }, {}),
       },
       styles: {
@@ -1465,20 +1564,15 @@ async function exportInvoicePDF(id) {
       ],
 
       footer: () => ({
-        stack: [
-          ...(foot ? [{ image: 'footimg', width: foot.w, alignment: 'center' }] : []),
-          {
-            table: {
-              widths: ['*'],
-              heights: [3, 26],
-              body: [
-                [{ text: '', fontSize: 1, fillColor: GOLD, border: [false, false, false, false] }],
-                [{ text: s.bottomTagline || '', italics: true, color: '#fff', fillColor: NAVY, alignment: 'center', fontSize: 9, margin: [0, 8, 0, 8], border: [false, false, false, false] }],
-              ],
-            },
-            layout: 'noBorders',
-          },
-        ],
+        table: {
+          widths: ['*'],
+          heights: [3, 26],
+          body: [
+            [{ text: '', fontSize: 1, fillColor: GOLD, border: [false, false, false, false] }],
+            [{ text: s.bottomTagline || '', italics: true, color: '#fff', fillColor: NAVY, alignment: 'center', fontSize: 9, margin: [0, 8, 0, 8], border: [false, false, false, false] }],
+          ],
+        },
+        layout: 'noBorders',
       }),
     };
 
@@ -1506,22 +1600,32 @@ async function exportInvoicePDF(id) {
 
 function createInvoiceFromJob(jobId) {
   const j = getJob(jobId);
-  const items = [];
-  let label = '';
-  (j.serviceIds || []).forEach((sid) => {
-    const s = getService(sid);
-    if (s) {
-      items.push({ name: s.name, qty: 1, price: s.price });
-      if (s.type === 'package' && !label) label = s.name.toUpperCase();
-    }
-  });
-  (j.customItems || []).forEach((it) => items.push({ name: it.name, qty: 1, price: Number(it.price) || 0 }));
-  if (j.priceOverride !== '' && j.priceOverride != null && !isNaN(j.priceOverride) && j.priceOverride !== undefined) {
-    items.length = 0;
-    items.push({ name: 'Detailing service', qty: 1, price: Number(j.priceOverride) });
-  }
   const client = getClient(j.clientId);
-  const v = getVehicle(client, j.vehicleId);
+  const sections = (j.vehicles || []).map((jv) => {
+    const items = [];
+    let label = '';
+    (jv.serviceIds || []).forEach((sid) => {
+      const s = getService(sid);
+      if (s) {
+        items.push({ name: s.name, qty: 1, price: s.price });
+        if (s.type === 'package' && !label) label = s.name.toUpperCase();
+      }
+    });
+    (jv.customItems || []).forEach((it) => items.push({ name: it.name, qty: 1, price: Number(it.price) || 0 }));
+    if (jv.priceOverride !== '' && jv.priceOverride != null && !isNaN(jv.priceOverride)) {
+      items.length = 0;
+      items.push({ name: 'Detailing service', qty: 1, price: Number(jv.priceOverride) });
+    }
+    const v = getVehicle(client, jv.vehicleId);
+    return {
+      vehicleId: jv.vehicleId || '',
+      carName: v ? [v.year, v.make, v.model].filter(Boolean).join(' ').toUpperCase() : '',
+      img: v?.img || '',
+      label,
+      discount: 0,
+      items,
+    };
+  });
   // a backdated job produces an invoice dated the day the work was done
   const issued = j.date || todayISO();
   const inv = {
@@ -1531,14 +1635,7 @@ function createInvoiceFromJob(jobId) {
     jobId: j.id,
     dateIssued: issued,
     dueDate: addDays(issued, 14),
-    sections: [{
-      vehicleId: j.vehicleId || '',
-      carName: v ? [v.year, v.make, v.model].filter(Boolean).join(' ').toUpperCase() : '',
-      img: v?.img || '',
-      label,
-      discount: 0,
-      items,
-    }],
+    sections,
     taxRate: db.settings.taxRate,
     discountType: 'amount',
     discountValue: 0,
@@ -1759,14 +1856,6 @@ function settingsHTML() {
         <div class="field"><label>Address (shown on invoices)</label><input id="s_address" value="${esc(s.address)}" onchange="setSetting('address',this.value)"></div>
         <div class="field"><label>Instagram handle</label><input value="${esc(s.instagram)}" placeholder="fatoma_autocare" onchange="setSetting('instagram',this.value)"></div>
       </div>
-      <div class="field"><label>Invoice footer picture (the constant image at the bottom of every invoice)</label>
-        ${s.footerImg ? `<img src="${esc(s.footerImg)}" alt="" style="width:100%;border-radius:8px;border:1px solid var(--line);margin-bottom:8px">` : ''}
-        <div class="row">
-          <button class="btn small ghost" onclick="document.getElementById('footerImgFile').click()">${s.footerImg ? 'Change picture' : '📷 Upload picture'}</button>
-          ${s.footerImg ? `<button class="btn small danger" onclick="setSetting('footerImg','');render()">Remove</button>` : ''}
-        </div>
-        <input type="file" id="footerImgFile" accept="image/*" style="display:none" onchange="uploadFooterImg(this)">
-      </div>
     </div>
 
     <h2 class="section">Packages, services & products</h2>
@@ -1965,27 +2054,6 @@ function saveSigCanvas() {
   toast('Signature saved');
 }
 
-function uploadFooterImg(input) {
-  const file = input.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = () => {
-    const img = new Image();
-    img.onload = () => {
-      const scale = Math.min(1, 1000 / img.width);
-      const c = document.createElement('canvas');
-      c.width = Math.round(img.width * scale);
-      c.height = Math.round(img.height * scale);
-      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-      setSetting('footerImg', c.toDataURL('image/jpeg', 0.82));
-      render();
-    };
-    img.src = reader.result;
-  };
-  reader.readAsDataURL(file);
-  input.value = '';
-}
-
 function uploadLogo(input) {
   const file = input.files[0];
   if (!file) return;
@@ -2122,6 +2190,7 @@ function importData(input) {
       db.settings = { ...freshState().settings, ...db.settings };
       db.services.forEach((s) => { if (!s.type) s.type = 'service'; });
       db.invoices.forEach(migrateInvoice);
+      db.jobs.forEach(migrateJob);
       save();
       render();
       toast('Backup restored ✓');
